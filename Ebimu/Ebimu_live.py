@@ -29,6 +29,7 @@ Roll / Pitch / Yaw + Gyro X,Y,Z + Accel X,Y,Z  9개 값을
 """
 
 import argparse
+import os
 import shutil
 import sys
 import unicodedata
@@ -115,6 +116,19 @@ def parse_layout(text):
     return names
 
 
+LAYOUT_FILE = "ebimu_layout.txt"
+
+
+def load_layout_file():
+    """Ebimu_cmd.py --detect --save-layout 가 저장해 둔 항목 목록."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), LAYOUT_FILE)
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as f:
+        text = f.read().strip()
+    return parse_layout(text) if text else None
+
+
 def list_blocks():
     print("\n  --layout 에 쓸 수 있는 항목 (패킷에 나오는 순서)\n")
     for key, (desc, labs) in BLOCKS.items():
@@ -129,8 +143,9 @@ def list_blocks():
 def resolve(n, layout):
     """필드 수 n 에 대한 (라벨 목록, 설명, 보조 안내)."""
     if layout:
-        labs = block_labels(layout)
-        note = "지정 " + "+".join(layout)
+        names, source = layout
+        labs = block_labels(names)
+        note = f"{source} " + "+".join(names)
         hint = ""
         if len(labs) != n:
             hint = f"[!] 지정 {len(labs)}개 ≠ 수신 {n}개 — 센서 설정을 확인하세요"
@@ -289,7 +304,11 @@ def main():
         list_blocks()
         return
 
-    layout = parse_layout(args.layout) if args.layout else None
+    if args.layout:
+        layout = (parse_layout(args.layout), "지정")
+    else:
+        from_file = load_layout_file()
+        layout = (from_file, f"{LAYOUT_FILE}") if from_file else None
 
     if args.port:
         port = args.port

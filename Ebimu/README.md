@@ -39,6 +39,8 @@ sudo usermod -aG dialout $USER              # 권한 부여 후 재로그인
 | `-c, --cmd` | 명령 직접 전송 (여러 번 지정 가능) |
 | `--show` | 현재 출력 상태만 확인 |
 | `--probe` | 출력 항목 켜기 자동 탐색 |
+| `--detect` | **켜져 있는 출력 항목 확인** — `--layout` 문자열을 만들어 줌 |
+| `--save-layout` | `--detect` 결과를 `ebimu_layout.txt` 에 저장 |
 | `--shell` | 대화형 명령 입력 |
 | `--preset NAME` | 상황별 설정 프리셋 적용 |
 | `--list-presets` | 프리셋 목록 보기 |
@@ -56,19 +58,25 @@ python3 Ebimu_cmd.py -p /dev/ttyUSB0 --probe
 # 3) 명령 직접 전송 (자이로 + 가속도 출력 켜기)
 python3 Ebimu_cmd.py -p /dev/ttyUSB0 -c "<sog1>" -c "<soa1>"
 
-# 4) 대화형 터미널
+# 4) 켜져 있는 출력 항목 확인 (Ebimu_live.py 의 --layout 값을 알아냄)
+python3 Ebimu_cmd.py -p /dev/ttyUSB0 --detect
+
+# 4-1) 결과를 파일로 저장 — 이후 Ebimu_live.py 는 --layout 없이 실행하면 됨
+python3 Ebimu_cmd.py -p /dev/ttyUSB0 --detect --save-layout
+
+# 5) 대화형 터미널
 python3 Ebimu_cmd.py -p /dev/ttyUSB0 --shell
 
-# 5) 프리셋 목록 보기 (포트 없이도 실행 가능)
+# 6) 프리셋 목록 보기 (포트 없이도 실행 가능)
 python3 Ebimu_cmd.py --list-presets
 
-# 6) 프리셋 적용 (진동이 심한 환경)
+# 7) 프리셋 적용 (진동이 심한 환경)
 python3 Ebimu_cmd.py -p /dev/ttyUSB0 --preset vibration
 
-# 7) 프리셋을 캘리브레이션까지 포함해 적용 (센서를 직접 움직여야 함)
+# 8) 프리셋을 캘리브레이션까지 포함해 적용 (센서를 직접 움직여야 함)
 python3 Ebimu_cmd.py -p /dev/ttyUSB0 --preset distance --include-cal
 
-# 8) 보레이트를 지정해서 실행
+# 9) 보레이트를 지정해서 실행
 python3 Ebimu_cmd.py -p /dev/serial0 -b 115200 --show
 ```
 
@@ -157,12 +165,42 @@ python3 Ebimu_live.py --list-blocks
 ※ 같은 10개 조합: euler+gyro+accel+time, euler+gyro+mag+temp … --layout 으로 확정하세요
 ```
 
-추정이 틀렸으면 `--layout` 으로 확정하세요. 지정하면 추정하지 않습니다.
+**가장 확실한 방법은 센서에 직접 물어보는 것입니다.** `Ebimu_cmd.py --detect` 는
+항목을 하나씩 껐다 켜면서 필드 수가 몇 개 줄어드는지로 무엇이 켜져 있는지 판정하고,
+그대로 붙여넣을 수 있는 `--layout` 을 만들어 줍니다.
+
+```bash
+# 센서에 물어봐서 알아내기 (모니터를 끄고 실행 — 포트를 하나만 열 수 있음)
+python3 Ebimu_cmd.py -p /dev/ttyUSB0 --detect
+
+  euler  오일러각    켜져 있음  필드 3개
+  gyro   각속도      켜져 있음  필드 3개
+  accel  가속도      켜져 있음  필드 3개
+  temp   온도        켜져 있음  필드 1개
+  ...
+  켜져 있는 항목: euler,gyro,accel,temp  (합계 10개)
+
+    python3 Ebimu_live.py -p /dev/ttyUSB0 --layout euler,gyro,accel,temp
+```
+
+한 번 저장해 두면 모니터는 `--layout` 없이 실행해도 됩니다.
+
+```bash
+python3 Ebimu_cmd.py -p /dev/ttyUSB0 --detect --save-layout   # ebimu_layout.txt 생성
+python3 Ebimu_live.py -p /dev/ttyUSB0                         # 파일을 읽어서 표시
+```
+
+직접 지정해도 됩니다. 지정하면 추정하지 않습니다.
 
 ```bash
 python3 Ebimu_live.py --list-blocks                                # 항목 이름 확인
 python3 Ebimu_live.py -p /dev/ttyUSB0 --layout euler,gyro,accel,temp
 ```
+
+`--detect` 는 항목을 잠깐 껐다 켜므로 그동안 값이 끊깁니다. 끈 항목은 바로 되돌리고
+플래시에 저장하지 않으므로, 중간에 끊겨도 센서 전원을 껐다 켜면 원래대로 돌아옵니다.
+펌웨어가 해당 `<so_>` 명령을 모르면 "꺼져 있음" 으로 보이는데, 이때는 찾은 항목의
+합계가 실제 필드 수와 달라지므로 경고가 뜹니다.
 
 지정한 개수와 실제 수신 개수가 다르면 화면에 경고가 뜨고, 남는 값은 `Val N` 으로 표시됩니다.
 
@@ -202,6 +240,9 @@ python3 Ebimu_cmd.py -p /dev/ttyUSB0 --show
 # 3. 9축 출력이 안 나오면 항목 켜기
 python3 Ebimu_cmd.py -p /dev/ttyUSB0 --probe
 
-# 4. 실시간 모니터링
+# 4. 켜져 있는 항목을 확인해서 저장 (값 이름이 Val 로 나오지 않게)
+python3 Ebimu_cmd.py -p /dev/ttyUSB0 --detect --save-layout
+
+# 5. 실시간 모니터링
 python3 Ebimu_live.py -p /dev/ttyUSB0
 ```

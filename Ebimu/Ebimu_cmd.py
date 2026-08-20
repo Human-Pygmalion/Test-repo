@@ -41,6 +41,7 @@ EBIMU-9DOF (E2BOX) 설정 도구  -  Ubuntu / Raspberry Pi
 """
 
 import argparse
+import os
 import sys
 import time
 
@@ -64,6 +65,28 @@ CANDIDATES = [
     ("<sov1>", "Velocity"),
     ("<sots1>", "Timestamp"),
 ]
+
+
+# ── --detect 용: 항목 이름 ↔ on/off 명령 ─────────────────────────
+# 켜져 있는 항목을 하나씩 꺼 보고, 필드가 몇 개 줄어드는지로 판정한다.
+# 이름은 Ebimu_live.py 의 --layout 에 그대로 쓴다.
+BLOCK_CMDS = [
+    ("euler", "<soe{}>",  "오일러각"),
+    ("quat",  "<soq{}>",  "쿼터니언"),
+    ("gyro",  "<sog{}>",  "각속도"),
+    ("accel", "<soa{}>",  "가속도"),
+    ("mag",   "<som{}>",  "지자기"),
+    ("dist",  "<sod{}>",  "거리"),
+    ("vel",   "<sov{}>",  "속도"),
+    ("temp",  "<sot{}>",  "온도"),
+    ("time",  "<sots{}>", "타임스탬프"),
+]
+
+# 패킷에 나오는 순서. --layout 은 이 순서대로 적어야 한다.
+BLOCK_ORDER = ["id", "euler", "quat", "gyro", "accel",
+               "mag", "dist", "vel", "temp", "time"]
+
+LAYOUT_FILE = "ebimu_layout.txt"
 
 # 확인 없이 보내면 안 되는 명령 (E2BOX 상황별 설정 문서 기준)
 #   <lf>  초기 설정 복원      <cg>   자이로 캘리브레이션
@@ -241,6 +264,91 @@ def probe(ser):
     print("     마음에 들면 매뉴얼의 저장 명령을 -c 로 보내 확정하세요.")
 
 
+def detect(ser, save):
+    """켜져 있는 출력 항목을 하나씩 꺼 보고 필드 수 변화로 알아낸다.
+
+    끈 항목은 바로 다시 켠다. 플래시에 저장하지 않으므로 중간에 끊겨도
+    센서 전원을 껐다 켜면 원래대로 돌아온다.
+    """
+    print("\n  [detect] 항목을 하나씩 껐다 켜며 무엇이 켜져 있는지 확인합니다.")
+    print("           측정값이 잠깐씩 끊깁니다. 센서를 움직이지 마세요.\n")
+
+    base_n, base_ex, _ = sample_fields(ser, 1.0)
+    base = numeric_fields(base_ex) if base_ex else 0
+    if base == 0:
+        print("  [!] 패킷이 오지 않습니다. 보레이트/배선을 먼저 확인하세요.")
+        return
+    print(f"  현재 숫자 필드 {base}개   {base_ex}\n")
+
+    found = {}        # 이름 → 필드 수
+    unknown = []      # 꺼져 있거나, 명령을 지원하지 않는 항목
+    turned_off = []   # 중간에 끊겼을 때 되돌릴 목록
+
+    try:
+        for name, fmt, desc in BLOCK_CMDS:
+            send(ser, fmt.format(0), 0.5)
+            turned_off.append((name, fmt))
+            _, ex, _ = sample_fields(ser, 0.7)
+            now = numeric_fields(ex) if ex else 0
+            delta = base - now
+
+            if delta > 0:
+                found[name] = delta
+                send(ser, fmt.format(1), 0.5)
+                turned_off.pop()
+                _, ex2, _ = sample_fields(ser, 0.7)
+                back = numeric_fields(ex2) if ex2 else 0
+                mark = "" if back == base else f"  [!] 복구 후 {back}개 (기대 {base}개)"
+                print(f"  {name:<6s} {desc:<10s} 켜져 있음  필드 {delta}개{mark}")
+            else:
+                # 원래 꺼져 있었거나, 이 펌웨어가 해당 명령을 모르는 것이다.
+                # 둘 다 출력이 그대로이므로 다시 켜지 않는다.
+                turned_off.pop()
+                unknown.append(name)
+                print(f"  {name:<6s} {desc:<10s} 꺼져 있음 (또는 명령 미지원)")
+    except KeyboardInterrupt:
+        print("\n  [!] 중단되었습니다. 껐던 항목을 되돌립니다.")
+        raise
+    finally:
+        for name, fmt in turned_off:
+            send(ser, fmt.format(1), 0.5)
+
+    layout = [n for n in BLOCK_ORDER if n in found]
+    total = sum(found.values())
+
+    print("\n  ── 결과 ──")
+    if not layout:
+        print("  켜져 있는 항목을 하나도 찾지 못했습니다.")
+        print("  펌웨어가 <so_> 명령을 다르게 쓸 수 있습니다. --probe 로 확인하세요.")
+        return
+
+    if total != base:
+        print(f"  [!] 찾은 항목 합계 {total}개 ≠ 실제 필드 {base}개.")
+        print(f"      {base - total}개는 위 명령으로 끄지 못한 항목입니다.")
+        print("      --raw 로 원문을 보고 --layout 을 손으로 맞춰야 합니다.\n")
+
+    arg = ",".join(layout)
+    print(f"  켜져 있는 항목: {arg}  (합계 {total}개)")
+    print("\n  실시간 모니터에 그대로 넣으세요:\n")
+    print(f"    python3 Ebimu_live.py -p {ser.port} --layout {arg}\n")
+
+    if save:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), LAYOUT_FILE)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(arg + "\n")
+        print(f"  {LAYOUT_FILE} 에 저장했습니다.")
+        print("  이제 Ebimu_live.py 는 --layout 없이 실행해도 이 값을 씁니다.\n")
+
+    if unknown:
+        print(f"  ※ 꺼져 있다고 나온 항목: {', '.join(unknown)}")
+        print("     명령을 지원하지 않아 그렇게 보일 수도 있습니다."
+              " 값이 이상하면 --raw 로 확인하세요.")
+    if "dist" in found:
+        print("  ※ 거리 출력은 <sod1>(local) 로 되돌렸습니다."
+              " global 이었다면 <sod2> 로 다시 지정하세요.")
+    print("  ※ 설정을 저장하지 않았습니다. 껐던 항목은 모두 되돌렸습니다.")
+
+
 def shell(ser):
     print("\n  [shell] 명령을 입력하세요. 예: <sog1>   (빈 줄 = 현재 출력 보기, q = 종료)")
     print("          위험 명령(<sb..>, <fd>, <rst> 등)은 확인을 한 번 더 받습니다.\n")
@@ -314,6 +422,10 @@ def main():
     ap.add_argument("-c", "--cmd", action="append", default=[], help="보낼 명령 (여러 번 가능)")
     ap.add_argument("--show", action="store_true", help="현재 출력 상태만 확인")
     ap.add_argument("--probe", action="store_true", help="출력 항목 켜기 자동 탐색")
+    ap.add_argument("--detect", action="store_true",
+                    help="켜져 있는 출력 항목 확인 (--layout 문자열을 만들어 줌)")
+    ap.add_argument("--save-layout", action="store_true",
+                    help=f"--detect 결과를 {LAYOUT_FILE} 에 저장")
     ap.add_argument("--shell", action="store_true", help="대화형 명령 입력")
     ap.add_argument("--preset", help="상황별 설정 프리셋 적용")
     ap.add_argument("--list-presets", action="store_true", help="프리셋 목록 보기")
@@ -342,6 +454,8 @@ def main():
             show(ser)
         if args.preset:
             apply_preset(ser, args.preset, args.include_cal)
+        elif args.detect:
+            detect(ser, args.save_layout)
         elif args.probe:
             probe(ser)
         elif args.shell:
