@@ -129,8 +129,10 @@ Roll / Pitch / Yaw + Gyro X,Y,Z + Accel X,Y,Z 9개 값을 한 화면에서 갱�
 | `--hz` | 화면 갱신 주기(Hz), 기본 `20` |
 | `--csv` | 갱신 대신 한 줄씩 계속 출력 (로그용, 첫 줄은 항목 이름) |
 | `--raw` | 센서 원문 그대로 출력 |
-| `--layout` | 켜 둔 출력 항목을 직접 지정, 예: `euler,gyro,accel,temp` |
+| `--layout` | 켜 둔 출력 항목을 직접 지정, 예: `euler,gyro,accel,temp` (자동 저장됨) |
 | `--list-blocks` | `--layout` 에 쓸 수 있는 항목 목록 (포트 없이 실행 가능) |
+| `--no-save` | `--layout` 을 저장하지 않고 이번 실행에만 씀 |
+| `--forget` | 저장된 `ebimu_layout.txt` 을 지우고 추정으로 되돌림 |
 
 ### 실행 명령어
 
@@ -155,6 +157,15 @@ python3 Ebimu_live.py -p /dev/ttyUSB0 --raw
 
 # 켜 둔 출력 항목을 직접 지정 (<sog1> <soa1> <sot1> 을 켠 경우)
 python3 Ebimu_live.py -p /dev/ttyUSB0 --layout euler,gyro,accel,temp
+
+# 위에서 한 번 지정했으면 그 다음부터는 그냥 실행하면 됨
+python3 Ebimu_live.py -p /dev/ttyUSB0
+
+# 이번만 다르게 보고 저장은 하지 않기
+python3 Ebimu_live.py -p /dev/ttyUSB0 --layout quat,gyro,accel --no-save
+
+# 저장된 항목을 지우고 추정으로 되돌리기
+python3 Ebimu_live.py --forget
 
 # --layout 에 쓸 수 있는 항목 목록 (포트 없이 실행 가능)
 python3 Ebimu_live.py --list-blocks
@@ -214,6 +225,27 @@ python3 Ebimu_live.py -p /dev/ttyUSB0                         # 파일을 읽어
 python3 Ebimu_live.py --list-blocks                                # 항목 이름 확인
 python3 Ebimu_live.py -p /dev/ttyUSB0 --layout euler,gyro,accel,temp
 ```
+
+### 한 번 지정하면 다음부터는 그냥 실행하면 됩니다
+
+`--layout` 으로 준 항목은 `ebimu_layout.txt` 에 저장됩니다.
+다음 실행부터는 `--layout` 을 빼도 같은 항목으로 나옵니다.
+
+```bash
+python3 Ebimu_live.py -p /dev/ttyUSB0 --layout euler,gyro,accel,temp
+  [i] ebimu_layout.txt 에 저장했습니다. 다음부터는 --layout 없이 실행해도 같은 항목으로 나옵니다.
+
+python3 Ebimu_live.py -p /dev/ttyUSB0        # 위와 같게 나옴
+  필드 10개 · ebimu_layout.txt euler+gyro+accel+temp
+```
+
+화면 위쪽에 항목이 어디서 온 값인지 나옵니다 — `지정`(이번에 `--layout` 으로 준 값),
+`ebimu_layout.txt`(저장해 둔 값), `추정`(필드 수로 짐작한 값).
+
+- 저장하지 않고 이번만 다르게 보려면 `--no-save`
+- 저장을 지우고 추정으로 되돌리려면 `--forget`
+- 센서 설정을 바꿨다면 저장된 값이 안 맞습니다. `--forget` 하거나 새 `--layout` 을 주세요
+  (개수가 다르면 화면에 경고가 뜹니다)
 
 찾은 항목의 합계가 실제 필드 수와 다르면 경고가 뜹니다. 이때는 `--raw` 로 원문을 보고
 `--layout` 을 손으로 맞춰야 합니다.

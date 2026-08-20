@@ -29,6 +29,12 @@ Roll / Pitch / Yaw + Gyro X,Y,Z + Accel X,Y,Z  9개 값을
     <cfg> 로 현재 설정을 읽어 --layout 문자열을 만들어 준다.
     명령 설명은 COMMANDS.md 참고.
 
+    --layout 을 한 번 주면 ebimu_layout.txt 에 저장해 두고, 다음부터는
+    --layout 없이 실행해도 같은 항목으로 나온다.
+        python3 ebimu_live.py -p /dev/ttyUSB0 --layout euler,gyro,accel,temp
+        python3 ebimu_live.py -p /dev/ttyUSB0        # 위와 같게 나옴
+        python3 ebimu_live.py --forget               # 저장을 지우고 추정으로
+
 종료: Ctrl-C
 """
 
@@ -127,14 +133,35 @@ def parse_layout(text):
 LAYOUT_FILE = "ebimu_layout.txt"
 
 
+def layout_path():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), LAYOUT_FILE)
+
+
 def load_layout_file():
-    """Ebimu_cmd.py --detect --save-layout 가 저장해 둔 항목 목록."""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), LAYOUT_FILE)
+    """--layout 으로 마지막에 쓴 항목 목록 (또는 --detect --save-layout 결과)."""
+    path = layout_path()
     if not os.path.exists(path):
         return None
-    with open(path, encoding="utf-8") as f:
-        text = f.read().strip()
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read().strip()
+    except OSError:
+        return None
     return parse_layout(text) if text else None
+
+
+def save_layout_file(names):
+    """--layout 으로 준 항목을 저장해 둔다. 다음 실행부터 그대로 쓴다."""
+    if load_layout_file() == names:
+        return          # 이미 같은 값이면 조용히 넘어간다
+    try:
+        with open(layout_path(), "w", encoding="utf-8") as f:
+            f.write(",".join(names) + "\n")
+    except OSError as e:
+        print(f"[!] {LAYOUT_FILE} 에 저장하지 못했습니다: {e}")
+        return
+    print(f"[i] {LAYOUT_FILE} 에 저장했습니다."
+          f" 다음부터는 --layout 없이 실행해도 같은 항목으로 나옵니다.")
 
 
 def list_blocks():
@@ -308,17 +335,33 @@ def main():
     ap.add_argument("--layout", help="출력 항목을 직접 지정, 예: euler,gyro,accel")
     ap.add_argument("--list-blocks", action="store_true",
                     help="--layout 에 쓸 수 있는 항목 목록 (포트 없이 실행 가능)")
+    ap.add_argument("--no-save", action="store_true",
+                    help=f"--layout 을 {LAYOUT_FILE} 에 저장하지 않음 (이번만 쓰기)")
+    ap.add_argument("--forget", action="store_true",
+                    help=f"저장된 {LAYOUT_FILE} 을 지우고 추정으로 되돌림")
     args = ap.parse_args()
 
     if args.list_blocks:
         list_blocks()
         return
 
+    if args.forget:
+        path = layout_path()
+        if os.path.exists(path):
+            os.remove(path)
+            print(f"{LAYOUT_FILE} 을 지웠습니다. 이제 필드 수로 추정합니다.")
+        else:
+            print(f"{LAYOUT_FILE} 이 없습니다. 이미 추정으로 동작합니다.")
+        return
+
     if args.layout:
-        layout = (parse_layout(args.layout), "지정")
+        names = parse_layout(args.layout)
+        layout = (names, "지정")
+        if not args.no_save:
+            save_layout_file(names)
     else:
         from_file = load_layout_file()
-        layout = (from_file, f"{LAYOUT_FILE}") if from_file else None
+        layout = (from_file, LAYOUT_FILE) if from_file else None
 
     if args.port:
         port = args.port
