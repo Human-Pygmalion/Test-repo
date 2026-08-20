@@ -7,7 +7,7 @@
 
 | 폴더 | 내용 |
 | --- | --- |
-| [Ebimu/](Ebimu/) | 센서 통신 및 실시간 모니터링 스크립트 — [사용법](Ebimu/README.md), [명령어](Ebimu/COMMANDS.md) |
+| [Ebimu/](Ebimu/) | 센서 통신 및 실시간 모니터링 스크립트 — [사용법](Ebimu/README.md) |
 
 ## 테스트 환경 준비
 
