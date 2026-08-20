@@ -22,8 +22,12 @@ Roll / Pitch / Yaw + Gyro X,Y,Z + Accel X,Y,Z  9개 값을
         python3 ebimu_live.py -p /dev/ttyUSB0 \
             --layout euler,gyro,accel,temp                        # 직접 지정
 
-    예) <sog1> <soa1> <sot1> 을 켜 두었다면 오일러각까지 10개이므로
+    예) <sog1> <soa1> <sot1> 을 켜 두었다면 자세까지 10개이므로
         --layout euler,gyro,accel,temp
+
+    가장 확실한 방법은 센서에 물어보는 것이다. Ebimu_cmd.py --detect 가
+    <cfg> 로 현재 설정을 읽어 --layout 문자열을 만들어 준다.
+    명령 설명은 COMMANDS.md 참고.
 
 종료: Ctrl-C
 """
@@ -43,30 +47,32 @@ except ImportError:
 
 
 # ────────────────────────────────────────────────────────────────
-# 출력 항목(블록) 정의
+# 출력 항목(블록) 정의   (E2BOX EBIMU-9DOFV5 매뉴얼 rev3 기준)
 #
-# EBIMU 패킷은 켜 놓은 항목이 아래 순서대로 이어 붙어 나온다.
-# 어떤 항목이 켜져 있는지는 패킷만 봐서는 알 수 없으므로,
-# 필드 수로 조합을 추정하고 맞지 않으면 --layout 으로 직접 지정한다.
+# 패킷은 sof, sog, soa, som, sod, sot, sots 순서로 이어 붙는다.
+# 자세(sof)는 끌 수 없고 Euler(3개)/Quaternion(4개) 중 하나로 항상 나온다.
+# 어떤 항목이 켜져 있는지는 패킷만 봐서는 알 수 없다.
+#   - Ebimu_cmd.py --detect  가 <cfg> 로 센서에 직접 물어본다 (권장)
+#   - 그게 안 되면 필드 수로 추정하고, --layout 으로 직접 지정한다
+# 자세한 명령 설명은 COMMANDS.md 참고.
 # ────────────────────────────────────────────────────────────────
 BLOCKS = {
-    "id":    ("센서 ID",    [("Sensor ID", "")]),
     "euler": ("오일러각",   [("Roll", "deg"), ("Pitch", "deg"), ("Yaw", "deg")]),
     "quat":  ("쿼터니언",   [("Quat Z", ""), ("Quat Y", ""),
                             ("Quat X", ""), ("Quat W", "")]),
     "gyro":  ("각속도",     [("Gyro X", "deg/s"), ("Gyro Y", "deg/s"),
                             ("Gyro Z", "deg/s")]),
     "accel": ("가속도",     [("Accel X", "g"), ("Accel Y", "g"), ("Accel Z", "g")]),
+    "vel":   ("속도",       [("Vel X", "m/s"), ("Vel Y", "m/s"), ("Vel Z", "m/s")]),
     "mag":   ("지자기",     [("Mag X", "uT"), ("Mag Y", "uT"), ("Mag Z", "uT")]),
     "dist":  ("거리",       [("Dist X", "m"), ("Dist Y", "m"), ("Dist Z", "m")]),
-    "vel":   ("속도",       [("Vel X", "m/s"), ("Vel Y", "m/s"), ("Vel Z", "m/s")]),
     "temp":  ("온도",       [("Temp", "C")]),
-    "time":  ("타임스탬프", [("Time", "s")]),
+    "time":  ("타임스탬프", [("Time", "ms")]),
 }
 
-# 자세 뒤에 붙는 항목들의 출력 순서.
-# 보통 앞에서부터 차례로 켜므로, 앞부분만 잘라낸 조합을 후보로 삼는다.
-_TAIL = ["gyro", "accel", "mag", "dist", "vel", "temp", "time"]
+# 자세(sof)는 끌 수 없어 항상 맨 앞에 온다. 나머지는 이 순서대로 이어 붙는다.
+# accel 과 vel 은 같은 명령(soa)을 쓰므로 동시에 나올 수 없다.
+_OPTIONAL = ["mag", "dist", "temp", "time"]
 
 
 def _subsets(items):
@@ -79,25 +85,27 @@ def _subsets(items):
 
 def _candidates():
     """필드 수가 같은 조합이 여러 개일 수 있어, 흔한 것부터 순서대로 돌려준다."""
-    subs = _subsets(_TAIL)
-    # 보통 앞에서부터 차례로 켜므로 연속된 조합(gyro, gyro+accel, ...)을 먼저 본다.
-    subs.sort(key=lambda sub: (0 if _TAIL[:len(sub)] == sub else 1,
+    rest = _subsets(_OPTIONAL)
+    # 보통 앞에서부터 차례로 켜므로 연속된 조합을 먼저 본다.
+    rest.sort(key=lambda sub: (0 if _OPTIONAL[:len(sub)] == sub else 1,
                                len(sub),
-                               [_TAIL.index(x) for x in sub]))
-    base = []
-    for head in (["euler"], ["quat"], []):
-        base += [head + sub for sub in subs]
-    # 센서를 여러 대 물리면 맨 앞에 ID 가 붙어 나오는 경우가 있다
-    return base + [["id"] + c for c in base]
+                               [_OPTIONAL.index(x) for x in sub]))
+    out = []
+    for head in (["euler"], ["quat"]):
+        for gyro in (["gyro"], []):
+            for soa in (["accel"], ["vel"], []):
+                for tail in rest:
+                    out.append(head + gyro + soa + tail)
+    return out
+
+
+def block_labels(names):
+    return [lab for n in names for lab in BLOCKS[n][1]]
 
 
 def matching_blocks(n):
     """필드 수가 n 인 조합 전부 (가능성이 높은 순)."""
     return [c for c in _candidates() if c and len(block_labels(c)) == n]
-
-
-def block_labels(names):
-    return [lab for n in names for lab in BLOCKS[n][1]]
 
 
 def guess_blocks(n):
@@ -134,6 +142,8 @@ def list_blocks():
     for key, (desc, labs) in BLOCKS.items():
         print(f"    {key:<7s} {pad(desc, 12)}{len(labs)}개   "
               f"{', '.join(l[0] for l in labs)}")
+    print("\n  ※ 자세(euler/quat)는 끌 수 없어 항상 맨 앞에 옵니다.")
+    print("     가속도와 속도는 같은 명령(soa)을 써서 동시에 나올 수 없습니다.")
     print("\n  예)  --layout euler,gyro,accel        9개")
     print("       --layout euler,gyro,accel,temp  10개   (<sog1> <soa1> <sot1>)")
     print("       --layout quat,gyro,accel        10개")
@@ -242,7 +252,7 @@ RANGES = {
     "m":     (-5, 5),
     "m/s":   (-5, 5),
     "C":     (0, 80),
-    "s":     None,
+    "ms":    None,
     "":      (-1, 1),
 }
 

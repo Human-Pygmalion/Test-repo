@@ -7,6 +7,7 @@ EBIMU-9DOF (E2BOX) 설정 도구  -  Ubuntu / Raspberry Pi
 켜고 끄기 위한 도구.
 
 모드
+  0) 설정 확인      python3 ebimu_cmd.py -p /dev/ttyUSB0 --detect
   1) 상태 확인      python3 ebimu_cmd.py -p /dev/ttyUSB0 --show
   2) 자동 탐색      python3 ebimu_cmd.py -p /dev/ttyUSB0 --probe
   3) 명령 직접 전송  python3 ebimu_cmd.py -p /dev/ttyUSB0 -c "<sog1>" -c "<soa1>"
@@ -29,19 +30,26 @@ EBIMU-9DOF (E2BOX) 설정 도구  -  Ubuntu / Raspberry Pi
   <lpfg> <lpfa> LPF 설정
   <posf_sl0.2>  걸음 추적 보폭 파라미터
 
-  → 출력 항목(자이로/가속도 등)을 켜는 <so_> 계열 명령은 위 문서에 없다.
-    --probe 가 후보를 보내보고 필드 수 변화로 맞는 것을 찾아낸다.
+  → 출력 항목을 켜고 끄는 <so_> 계열은 SPECIFICATION 문서 6-1 에 있다.
+    전체 명령표는 COMMANDS.md 에 정리해 두었다.
+      <sof1/2>  자세 포맷 Euler / Quaternion  (끌 수 없음)
+      <sog0/1>  자이로            <som0/1>  지자기
+      <soa0~5>  가속도 1~3 / 속도 4~5 (동시 불가)
+      <sod0/1/2> 거리 끄기 / Local / Global
+      <sot0/1>  온도              <sots0/1> 타임스탬프
+      <cfg>     현재 설정 전부 출력  ← --detect 가 쓰는 명령
 
 안전장치
   - --probe 는 "출력 항목 on" 계열 명령만 시도한다.
     통신속도(baudrate) 변경, 공장초기화, 캘리브레이션 계열은 절대 보내지 않는다.
-  - 설정을 플래시에 저장하는 명령은 보내지 않으므로,
-    잘못돼도 센서 전원을 껐다 켜면 원래대로 돌아온다.
-    (마음에 들면 매뉴얼의 저장 명령을 --cmd 로 직접 보내면 된다)
+  - [!] 설정은 내부 비휘발성 메모리에 자동 저장된다 (매뉴얼 6-1).
+    전원을 껐다 켜도 되돌아오지 않는다. 되돌리려면 반대 명령을 직접 보내거나
+    <lf> 로 공장초기화해야 한다. 바꾸기 전에 --detect 로 지금 설정을 적어 두자.
 """
 
 import argparse
 import os
+import re
 import sys
 import time
 
@@ -51,40 +59,68 @@ except ImportError:
     serial = None   # --list-presets 는 pyserial 없이도 동작
 
 
-# ── 시도해볼 '출력 항목 켜기' 후보 ────────────────────────────────
-# E2BOX 명령 형식은 <so + 항목문자 + 값> 이다.
-# (공식 문서에 <sod2> = global 거리 출력 설정 예시가 나와 있다)
+# ── '출력 항목 켜기' 명령 (매뉴얼 6-1, COMMANDS.md 참고) ─────────
+# 자세(sof)는 끌 수 없어 후보에 없다. 속도는 <soa4>/<soa5> 로,
+# 가속도와 같은 자리를 쓰므로 동시에 켤 수 없다.
 CANDIDATES = [
-    ("<soe1>", "Euler  (roll/pitch/yaw)"),
     ("<sog1>", "Gyro   (각속도)"),
-    ("<soa1>", "Accel  (가속도)"),
+    ("<soa1>", "Accel  (중력성분 포함 가속도)"),
     ("<som1>", "Magnet (지자기)"),
-    ("<soq1>", "Quaternion"),
+    ("<sod1>", "Distance (Local)"),
     ("<sot1>", "Temperature"),
-    ("<sod1>", "Distance"),
-    ("<sov1>", "Velocity"),
     ("<sots1>", "Timestamp"),
 ]
 
 
-# ── --detect 용: 항목 이름 ↔ on/off 명령 ─────────────────────────
-# 켜져 있는 항목을 하나씩 꺼 보고, 필드가 몇 개 줄어드는지로 판정한다.
-# 이름은 Ebimu_live.py 의 --layout 에 그대로 쓴다.
-BLOCK_CMDS = [
-    ("euler", "<soe{}>",  "오일러각"),
-    ("quat",  "<soq{}>",  "쿼터니언"),
+# ── --detect 용 (COMMANDS.md 6-1 / 6-4-1 참고) ───────────────────
+# <cfg> 가 현재 설정을 명령어별로 출력한다. 이것으로 확인하는 게 정확하고,
+# 설정을 건드리지 않으므로 안전하다.
+#
+# 자세(sof)는 끌 수 없다. Euler(3개) / Quaternion(4개) 중 하나로 항상 나온다.
+# 가속도와 속도는 soa 하나를 나눠 쓰므로 동시에 나올 수 없다.
+CFG_TO_BLOCK = [
+    ("sof",  {"1": "euler", "2": "quat"}),
+    ("sog",  {"1": "gyro"}),
+    ("soa",  {"1": "accel", "2": "accel", "3": "accel",
+              "4": "vel", "5": "vel"}),
+    ("som",  {"1": "mag"}),
+    ("sod",  {"1": "dist", "2": "dist"}),
+    ("sot",  {"1": "temp"}),
+    ("sots", {"1": "time"}),
+]
+
+# soa/sod 는 값에 따라 뜻이 달라 되돌릴 때 주의가 필요하다.
+CFG_DETAIL = {
+    ("soa", "1"): "중력성분 포함 가속도",
+    ("soa", "2"): "중력성분 제거 Local 가속도",
+    ("soa", "3"): "중력성분 제거 Global 가속도",
+    ("soa", "4"): "Local 속도",
+    ("soa", "5"): "Global 속도",
+    ("sod", "1"): "Local 거리",
+    ("sod", "2"): "Global 거리",
+    ("sof", "1"): "Euler Angles",
+    ("sof", "2"): "Quaternion",
+}
+
+# <cfg> 응답에서 <명령값> 을 뽑는다. 예: <sog1> <raa_t10000>
+CFG_TOKEN = re.compile(r"<([a-z_+]+?)([-0-9.]*)>")
+# 괄호 없이 나오는 펌웨어를 위한 대비책
+CFG_BARE = re.compile(r"\b(sof|sog|soa|som|sod|sots|sot)\s*[:=]?\s*([0-9])\b")
+
+# --detect --toggle 용: 항목을 하나씩 꺼 보는 방법에서 쓸 on/off 명령.
+# <cfg> 를 못 읽을 때만 쓴다. 설정이 자동 저장되므로 위험하다.
+TOGGLE_CMDS = [
     ("gyro",  "<sog{}>",  "각속도"),
-    ("accel", "<soa{}>",  "가속도"),
+    ("accel", "<soa{}>",  "가속도/속도"),
     ("mag",   "<som{}>",  "지자기"),
     ("dist",  "<sod{}>",  "거리"),
-    ("vel",   "<sov{}>",  "속도"),
     ("temp",  "<sot{}>",  "온도"),
     ("time",  "<sots{}>", "타임스탬프"),
 ]
 
 # 패킷에 나오는 순서. --layout 은 이 순서대로 적어야 한다.
-BLOCK_ORDER = ["id", "euler", "quat", "gyro", "accel",
-               "mag", "dist", "vel", "temp", "time"]
+BLOCK_ORDER = ["euler", "quat", "gyro", "accel", "vel",
+               "mag", "dist", "temp", "time"]
 
 LAYOUT_FILE = "ebimu_layout.txt"
 
@@ -92,8 +128,14 @@ LAYOUT_FILE = "ebimu_layout.txt"
 #   <lf>  초기 설정 복원      <cg>   자이로 캘리브레이션
 #   <cmf> 지자기 캘리브레이션  <caf>  가속도 캘리브레이션
 #   <sb>  통신속도 변경
-DANGEROUS = ("<lf", "<sb", "<fd", "<rst")
-CALIBRATION = ("<cg", "<cmf", "<caf", "<cm", "<ca")
+#   <lf>    공장초기화 (캘리브레이션 결과까지 사라짐)
+#   <sb_>   통신속도 변경 (보레이트가 달라져 통신이 끊긴다)
+#   <reset> 센서 reset      <stop>  출력 중지
+#   <pons0> 전원 인가시 작동 안함으로 설정
+DANGEROUS = ("<lf", "<sb", "<reset", "<stop", "<pons")
+#   <cg> <caf> <cas> 자이로/가속도,  <cmf> <cnxy> <cnz> <+cnxy> <+cnz> 지자기
+#   <cmo..> 자세 offset,  <cmco> offset 제거
+CALIBRATION = ("<cg", "<ca", "<cm", "<cn", "<+cn")
 FORBIDDEN = DANGEROUS + CALIBRATION
 
 
@@ -224,7 +266,9 @@ def show(ser):
 
 def probe(ser):
     print("\n  [probe] 출력 항목을 하나씩 켜보며 반응을 확인합니다.")
-    print("          (통신속도/초기화/캘리브레이션 명령은 보내지 않습니다)\n")
+    print("          (통신속도/초기화/캘리브레이션 명령은 보내지 않습니다)")
+    print("  [!] 켜진 설정은 센서에 자동 저장됩니다."
+          " 지금 설정을 알고 싶으면 --detect 를 먼저 쓰세요.\n")
 
     base, ex, _ = sample_fields(ser, 0.7)
     base_num = numeric_fields(ex) if ex else 0
@@ -260,32 +304,157 @@ def probe(ser):
 
     print("\n  최종 상태:")
     show(ser)
-    print("\n  ※ 이 설정은 아직 저장되지 않았습니다. 전원을 껐다 켜면 원래대로 돌아갑니다.")
-    print("     마음에 들면 매뉴얼의 저장 명령을 -c 로 보내 확정하세요.")
+    print("\n  ※ 바뀐 설정은 센서에 자동 저장되었습니다."
+          " 전원을 껐다 켜도 그대로입니다.")
+    print("     되돌리려면 <sog0> 처럼 직접 끄거나 <lf> 로 공장초기화하세요.")
 
 
-def detect(ser, save):
-    """켜져 있는 출력 항목을 하나씩 꺼 보고 필드 수 변화로 알아낸다.
+def read_config(ser):
+    """<cfg> 로 현재 설정을 받아온다.
 
-    끈 항목은 바로 다시 켠다. 플래시에 저장하지 않으므로 중간에 끊겨도
-    센서 전원을 껐다 켜면 원래대로 돌아온다.
+    매뉴얼 6-4-1: cfg 는 '>' 를 입력할 때까지 센서를 정지 상태로 둔다.
+    무슨 일이 있어도 '>' 를 보내야 하므로 finally 에서 처리한다.
+    설정을 바꾸지 않으므로 이 명령 자체는 안전하다.
     """
-    print("\n  [detect] 항목을 하나씩 껐다 켜며 무엇이 켜져 있는지 확인합니다.")
-    print("           측정값이 잠깐씩 끊깁니다. 센서를 움직이지 마세요.\n")
+    ser.reset_input_buffer()
+    ser.write(b"<cfg>")
+    ser.flush()
+    try:
+        return drain(ser, 2.0)
+    finally:
+        ser.write(b">")
+        ser.flush()
+        drain(ser, 0.5)
 
+
+def parse_config(txt):
+    """<cfg> 응답에서 {명령이름: 값} 을 뽑는다."""
+    found = dict(CFG_TOKEN.findall(txt))
+    if not any(k in found for k, _ in CFG_TO_BLOCK):
+        found.update(dict(CFG_BARE.findall(txt)))
+    return found
+
+
+def layout_from_config(cfg):
+    """설정 표에서 켜져 있는 출력 항목 목록을 만든다."""
+    layout, detail = [], []
+    for key, mapping in CFG_TO_BLOCK:
+        val = cfg.get(key)
+        if val is None:
+            if key == "sof":
+                # 자세는 끌 수 없다. 값이 안 보이면 기본값 Euler 로 본다.
+                layout.append("euler")
+                detail.append(("sof", "?", "Euler Angles (기본값으로 가정)"))
+            continue
+        block = mapping.get(val)
+        if block:
+            layout.append(block)
+            detail.append((key, val, CFG_DETAIL.get((key, val),
+                                                    BLOCKS_DESC.get(block, ""))))
+    return layout, detail
+
+
+BLOCKS_DESC = {
+    "euler": "오일러각", "quat": "쿼터니언", "gyro": "각속도",
+    "accel": "가속도", "vel": "속도", "mag": "지자기",
+    "dist": "거리", "temp": "온도", "time": "타임스탬프",
+}
+
+BLOCK_SIZE = {"euler": 3, "quat": 4, "gyro": 3, "accel": 3, "vel": 3,
+              "mag": 3, "dist": 3, "temp": 1, "time": 1}
+
+
+def save_layout(arg):
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), LAYOUT_FILE)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(arg + "\n")
+    print(f"\n  {LAYOUT_FILE} 에 저장했습니다.")
+    print("  이제 Ebimu_live.py 는 --layout 없이 실행해도 이 값을 씁니다.")
+
+
+def report(layout, base, ser, save):
+    """찾은 항목을 실제 필드 수와 대조해 보고한다."""
+    total = sum(BLOCK_SIZE[b] for b in layout)
+    arg = ",".join(layout)
+
+    print(f"\n  켜져 있는 항목: {arg}  (합계 {total}개)")
+    if base and total != base:
+        print(f"\n  [!] 합계 {total}개 ≠ 실제 필드 {base}개.")
+        print("      --raw 로 원문을 보고 --layout 을 손으로 맞춰야 합니다.")
+    print("\n  실시간 모니터에 그대로 넣으세요:\n")
+    print(f"    python3 Ebimu_live.py -p {ser.port} --layout {arg}")
+    if save:
+        save_layout(arg)
+
+
+def detect(ser, save, toggle):
+    """켜져 있는 출력 항목을 알아낸다.
+
+    기본은 <cfg> 로 센서에 직접 물어보는 것이다. 설정을 바꾸지 않는다.
+    --toggle 은 항목을 하나씩 꺼 보는 옛 방법으로, 설정이 자동 저장되므로
+    되돌리지 못할 수 있다.
+    """
     base_n, base_ex, _ = sample_fields(ser, 1.0)
     base = numeric_fields(base_ex) if base_ex else 0
-    if base == 0:
-        print("  [!] 패킷이 오지 않습니다. 보레이트/배선을 먼저 확인하세요.")
+    if base:
+        print(f"\n  현재 숫자 필드 {base}개   {base_ex}")
+    else:
+        print("\n  [!] 패킷이 오지 않습니다. 보레이트/배선을 확인하세요.")
+
+    if toggle:
+        return detect_by_toggle(ser, save, base)
+
+    print("\n  [detect] <cfg> 로 센서에 현재 설정을 물어봅니다."
+          " (설정을 바꾸지 않습니다)\n")
+    txt = read_config(ser)
+    cfg = parse_config(txt)
+
+    out_keys = [k for k, _ in CFG_TO_BLOCK if k in cfg]
+    if not out_keys:
+        print("  [!] <cfg> 응답에서 출력 설정을 찾지 못했습니다.")
+        print("      받은 내용 앞부분:")
+        for line in txt.splitlines()[:12]:
+            if line.strip():
+                print(f"        {line.strip()[:70]}")
+        print("\n      펌웨어가 다른 형식으로 답할 수 있습니다."
+              " 항목을 껐다 켜며 찾으려면:")
+        print(f"        python3 Ebimu_cmd.py -p {ser.port} --detect --toggle")
+        print("      (설정이 자동 저장되므로 되돌리지 못할 수 있습니다)")
         return
-    print(f"  현재 숫자 필드 {base}개   {base_ex}\n")
 
-    found = {}        # 이름 → 필드 수
-    unknown = []      # 꺼져 있거나, 명령을 지원하지 않는 항목
-    turned_off = []   # 중간에 끊겼을 때 되돌릴 목록
+    layout, detail = layout_from_config(cfg)
+    for key, val, desc in detail:
+        print(f"    <{key}{val}>{'':<4s} {desc}")
 
+    off = [k for k, _ in CFG_TO_BLOCK if cfg.get(k) == "0"]
+    if off:
+        print(f"\n  꺼져 있음: {', '.join(off)}")
+
+    report(layout, base, ser, save)
+    print("\n  ※ <cfg> 는 설정을 읽기만 합니다. 아무것도 바뀌지 않았습니다.")
+
+
+def detect_by_toggle(ser, save, base):
+    """항목을 하나씩 꺼 보고 필드 수 변화로 알아낸다. <cfg> 가 안 될 때만.
+
+    주의: 출력 설정은 내부 비휘발성 메모리에 자동 저장된다(매뉴얼 6-1).
+    중간에 끊기면 항목이 꺼진 채로 남고, 전원을 껐다 켜도 돌아오지 않는다.
+    """
+    if not base:
+        print("  [!] 패킷이 없으면 필드 수 변화를 볼 수 없습니다.")
+        return
+
+    print("\n  [detect --toggle] 항목을 하나씩 껐다 켭니다.")
+    print("  [!] 출력 설정은 센서에 자동 저장됩니다."
+          " 중간에 끊기면 꺼진 채로 남습니다.")
+    print("      (되돌리려면 <sog1> 처럼 직접 켜거나 <lf> 로 공장초기화)")
+    if input("\n  진행할까요? (yes): ").strip().lower() != "yes":
+        print("  취소했습니다.")
+        return
+
+    found, off, turned_off = {}, [], []
     try:
-        for name, fmt, desc in BLOCK_CMDS:
+        for name, fmt, desc in TOGGLE_CMDS:
             send(ser, fmt.format(0), 0.5)
             turned_off.append((name, fmt))
             _, ex, _ = sample_fields(ser, 0.7)
@@ -299,54 +468,43 @@ def detect(ser, save):
                 _, ex2, _ = sample_fields(ser, 0.7)
                 back = numeric_fields(ex2) if ex2 else 0
                 mark = "" if back == base else f"  [!] 복구 후 {back}개 (기대 {base}개)"
-                print(f"  {name:<6s} {desc:<10s} 켜져 있음  필드 {delta}개{mark}")
+                print(f"  {name:<6s} {desc:<12s} 켜져 있음  필드 {delta}개{mark}")
             else:
-                # 원래 꺼져 있었거나, 이 펌웨어가 해당 명령을 모르는 것이다.
-                # 둘 다 출력이 그대로이므로 다시 켜지 않는다.
+                # 원래 꺼져 있었거나 펌웨어가 명령을 모르는 것이다. 켜지 않는다.
                 turned_off.pop()
-                unknown.append(name)
-                print(f"  {name:<6s} {desc:<10s} 꺼져 있음 (또는 명령 미지원)")
-    except KeyboardInterrupt:
-        print("\n  [!] 중단되었습니다. 껐던 항목을 되돌립니다.")
-        raise
+                off.append(name)
+                print(f"  {name:<6s} {desc:<12s} 꺼져 있음 (또는 명령 미지원)")
     finally:
         for name, fmt in turned_off:
             send(ser, fmt.format(1), 0.5)
 
-    layout = [n for n in BLOCK_ORDER if n in found]
-    total = sum(found.values())
+    # 자세는 끌 수 없다. 나머지를 뺀 만큼이 자세 필드 수다.
+    rest = sum(found.values())
+    head = base - rest
+    layout = []
+    if head == 4:
+        layout.append("quat")
+    elif head == 3:
+        layout.append("euler")
+    else:
+        print(f"\n  [!] 자세 필드가 {head}개로 나왔습니다 (Euler 3 / Quaternion 4).")
+    layout += [b for b in BLOCK_ORDER if b in found]
 
-    print("\n  ── 결과 ──")
-    if not layout:
-        print("  켜져 있는 항목을 하나도 찾지 못했습니다.")
-        print("  펌웨어가 <so_> 명령을 다르게 쓸 수 있습니다. --probe 로 확인하세요.")
+    if not found and head not in (3, 4):
+        print("\n  켜져 있는 항목을 찾지 못했습니다. --probe 로 확인하세요.")
         return
 
-    if total != base:
-        print(f"  [!] 찾은 항목 합계 {total}개 ≠ 실제 필드 {base}개.")
-        print(f"      {base - total}개는 위 명령으로 끄지 못한 항목입니다.")
-        print("      --raw 로 원문을 보고 --layout 을 손으로 맞춰야 합니다.\n")
+    report(layout, base, ser, save)
 
-    arg = ",".join(layout)
-    print(f"  켜져 있는 항목: {arg}  (합계 {total}개)")
-    print("\n  실시간 모니터에 그대로 넣으세요:\n")
-    print(f"    python3 Ebimu_live.py -p {ser.port} --layout {arg}\n")
-
-    if save:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), LAYOUT_FILE)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(arg + "\n")
-        print(f"  {LAYOUT_FILE} 에 저장했습니다.")
-        print("  이제 Ebimu_live.py 는 --layout 없이 실행해도 이 값을 씁니다.\n")
-
-    if unknown:
-        print(f"  ※ 꺼져 있다고 나온 항목: {', '.join(unknown)}")
-        print("     명령을 지원하지 않아 그렇게 보일 수도 있습니다."
-              " 값이 이상하면 --raw 로 확인하세요.")
+    if "accel" in found:
+        print("\n  ※ 가속도는 <soa1>(중력성분 포함) 로 되돌렸습니다."
+              " 원래 <soa2>~<soa5> 였다면 그 값으로 다시 지정하세요.")
     if "dist" in found:
-        print("  ※ 거리 출력은 <sod1>(local) 로 되돌렸습니다."
-              " global 이었다면 <sod2> 로 다시 지정하세요.")
-    print("  ※ 설정을 저장하지 않았습니다. 껐던 항목은 모두 되돌렸습니다.")
+        print("  ※ 거리는 <sod1>(Local) 로 되돌렸습니다."
+              " Global 이었다면 <sod2> 로 다시 지정하세요.")
+    if off:
+        print(f"  ※ 꺼져 있다고 나온 항목: {', '.join(off)}")
+        print("     명령을 지원하지 않아 그렇게 보일 수도 있습니다.")
 
 
 def shell(ser):
@@ -410,8 +568,9 @@ def apply_preset(ser, name, include_cal):
 
     for c, d, _ in todo:
         print(f"    send {c:<14s} → 응답:{send(ser, c, 0.6)!r}")
-    print("\n  ※ 설정 저장 명령은 보내지 않았습니다. 전원을 껐다 켜면 원래대로 돌아갑니다.")
-    print("     되돌리려면 초기화 명령 <lf> 를 --shell 에서 보내세요.")
+    print("\n  ※ 바뀐 설정은 센서에 자동 저장되었습니다."
+          " 전원을 껐다 켜도 그대로입니다.")
+    print("     되돌리려면 반대 명령을 직접 보내거나 <lf> 로 공장초기화하세요.")
     show(ser)
 
 
@@ -426,6 +585,9 @@ def main():
                     help="켜져 있는 출력 항목 확인 (--layout 문자열을 만들어 줌)")
     ap.add_argument("--save-layout", action="store_true",
                     help=f"--detect 결과를 {LAYOUT_FILE} 에 저장")
+    ap.add_argument("--toggle", action="store_true",
+                    help="--detect 를 <cfg> 대신 항목을 껐다 켜는 방식으로"
+                         " (설정이 자동 저장되므로 위험)")
     ap.add_argument("--shell", action="store_true", help="대화형 명령 입력")
     ap.add_argument("--preset", help="상황별 설정 프리셋 적용")
     ap.add_argument("--list-presets", action="store_true", help="프리셋 목록 보기")
@@ -455,7 +617,7 @@ def main():
         if args.preset:
             apply_preset(ser, args.preset, args.include_cal)
         elif args.detect:
-            detect(ser, args.save_layout)
+            detect(ser, args.save_layout, args.toggle)
         elif args.probe:
             probe(ser)
         elif args.shell:

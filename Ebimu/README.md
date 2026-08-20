@@ -9,8 +9,8 @@ E2BOX EBIMU-9DOF 센서(Ubuntu / Raspberry Pi)의 설정과 실시간 모니터�
 - [`COMMANDS.md`](COMMANDS.md): 센서 명령어 정리 (E2BOX 매뉴얼 rev3 기준)
 
 > **주의**: 센서 설정은 모두 내부 비휘발성 메모리에 **자동 저장**됩니다.
-> 전원을 껐다 켜도 되돌아오지 않습니다. 아래 스크립트의 설명 중
-> "전원을 껐다 켜면 원래대로 돌아갑니다" 는 틀린 내용입니다.
+> 전원을 껐다 켜도 되돌아오지 않습니다. 되돌리려면 반대 명령을 직접 보내거나
+> `<lf>` 로 공장초기화해야 합니다. 바꾸기 전에 `--detect` 로 지금 설정을 적어 두세요.
 > 자세한 것은 [COMMANDS.md](COMMANDS.md) 를 보세요.
 
 아래 명령어는 모두 이 `Ebimu/` 폴더 안에서 실행하는 기준입니다.
@@ -45,8 +45,9 @@ sudo usermod -aG dialout $USER              # 권한 부여 후 재로그인
 | `-c, --cmd` | 명령 직접 전송 (여러 번 지정 가능) |
 | `--show` | 현재 출력 상태만 확인 |
 | `--probe` | 출력 항목 켜기 자동 탐색 |
-| `--detect` | **켜져 있는 출력 항목 확인** — `--layout` 문자열을 만들어 줌 |
+| `--detect` | **켜져 있는 출력 항목 확인** — `<cfg>` 로 물어봄, 설정을 바꾸지 않음 |
 | `--save-layout` | `--detect` 결과를 `ebimu_layout.txt` 에 저장 |
+| `--toggle` | `--detect` 를 항목을 껐다 켜는 방식으로 (`<cfg>` 가 안 될 때만) |
 | `--shell` | 대화형 명령 입력 |
 | `--preset NAME` | 상황별 설정 프리셋 적용 |
 | `--list-presets` | 프리셋 목록 보기 |
@@ -104,10 +105,13 @@ python3 Ebimu_cmd.py -p /dev/serial0 -b 115200 --show
 
 ### 안전장치
 
-- `--probe` 는 "출력 항목 on" 계열 명령만 시도합니다. 통신속도(baudrate) 변경, 공장초기화, 캘리브레이션 계열은 보내지 않습니다.
-- 프리셋의 캘리브레이션 명령은 기본적으로 건너뛰며, `--include-cal` 을 붙여야 전송합니다.
-- 설정을 플래시에 저장하는 명령은 보내지 않으므로, 잘못돼도 센서 전원을 껐다 켜면 원래대로 돌아갑니다.
-- `--shell` 에서 위험 명령(`<lf>`, `<sb..>`, `<fd>`, `<rst>`, 캘리브레이션 계열)은 `yes` 확인을 한 번 더 받습니다.
+- **설정은 센서에 자동 저장됩니다.** 전원을 껐다 켜도 되돌아오지 않습니다 ([COMMANDS.md](COMMANDS.md) 참고)
+- `--detect` 는 `<cfg>` 로 읽기만 하므로 안전합니다. 바꾸기 전에 이걸로 지금 설정을 적어 두세요
+- `--probe` 는 "출력 항목 on" 계열 명령만 시도합니다. 통신속도 변경, 공장초기화, 캘리브레이션은 보내지 않습니다
+- 프리셋과 `--detect --toggle` 은 실행 전에 `yes` 확인을 받습니다. 프리셋의 캘리브레이션은 `--include-cal` 을 붙여야 전송합니다
+- `--shell` 에서 위험 명령은 `yes` 확인을 한 번 더 받습니다
+  - 초기화/통신설정: `<lf>` `<sb_>` `<reset>` `<stop>` `<pons_>`
+  - 캘리브레이션: `<cg>` `<ca..>` `<cm..>` `<cn..>` `<+cn..>`
 
 ---
 
@@ -172,22 +176,30 @@ python3 Ebimu_live.py --list-blocks
 ```
 
 **가장 확실한 방법은 센서에 직접 물어보는 것입니다.** `Ebimu_cmd.py --detect` 는
-항목을 하나씩 껐다 켜면서 필드 수가 몇 개 줄어드는지로 무엇이 켜져 있는지 판정하고,
-그대로 붙여넣을 수 있는 `--layout` 을 만들어 줍니다.
+`<cfg>` 명령으로 센서의 현재 설정을 그대로 읽어 `--layout` 문자열을 만들어 줍니다.
+설정을 읽기만 하므로 아무것도 바뀌지 않습니다.
 
 ```bash
 # 센서에 물어봐서 알아내기 (모니터를 끄고 실행 — 포트를 하나만 열 수 있음)
 python3 Ebimu_cmd.py -p /dev/ttyUSB0 --detect
 
-  euler  오일러각    켜져 있음  필드 3개
-  gyro   각속도      켜져 있음  필드 3개
-  accel  가속도      켜져 있음  필드 3개
-  temp   온도        켜져 있음  필드 1개
-  ...
+  현재 숫자 필드 10개   *12.50,-3.20,178.90,...
+
+  [detect] <cfg> 로 센서에 현재 설정을 물어봅니다. (설정을 바꾸지 않습니다)
+
+    <sof1>     Euler Angles
+    <sog1>     각속도
+    <soa1>     중력성분 포함 가속도
+    <sot1>     온도
+
   켜져 있는 항목: euler,gyro,accel,temp  (합계 10개)
 
     python3 Ebimu_live.py -p /dev/ttyUSB0 --layout euler,gyro,accel,temp
 ```
+
+`<cfg>` 에 답하지 않는 펌웨어라면 `--toggle` 로 항목을 하나씩 껐다 켜며 찾을 수
+있습니다. **다만 출력 설정은 센서에 자동 저장되므로**, 중간에 끊기면 항목이 꺼진 채로
+남고 전원을 껐다 켜도 돌아오지 않습니다. 그래서 실행 전에 확인을 한 번 받습니다.
 
 한 번 저장해 두면 모니터는 `--layout` 없이 실행해도 됩니다.
 
@@ -203,10 +215,8 @@ python3 Ebimu_live.py --list-blocks                                # 항목 이�
 python3 Ebimu_live.py -p /dev/ttyUSB0 --layout euler,gyro,accel,temp
 ```
 
-`--detect` 는 항목을 잠깐 껐다 켜므로 그동안 값이 끊깁니다. 끈 항목은 바로 되돌리고
-플래시에 저장하지 않으므로, 중간에 끊겨도 센서 전원을 껐다 켜면 원래대로 돌아옵니다.
-펌웨어가 해당 `<so_>` 명령을 모르면 "꺼져 있음" 으로 보이는데, 이때는 찾은 항목의
-합계가 실제 필드 수와 달라지므로 경고가 뜹니다.
+찾은 항목의 합계가 실제 필드 수와 다르면 경고가 뜹니다. 이때는 `--raw` 로 원문을 보고
+`--layout` 을 손으로 맞춰야 합니다.
 
 지정한 개수와 실제 수신 개수가 다르면 화면에 경고가 뜨고, 남는 값은 `Val N` 으로 표시됩니다.
 
@@ -216,21 +226,27 @@ python3 Ebimu_live.py -p /dev/ttyUSB0 --layout euler,gyro,accel,temp
 
 | 이름 | 항목 | 개수 | 값 |
 | --- | --- | --- | --- |
-| `id` | 센서 ID | 1 | Sensor ID |
 | `euler` | 오일러각 | 3 | Roll, Pitch, Yaw |
 | `quat` | 쿼터니언 | 4 | Quat Z, Quat Y, Quat X, Quat W |
 | `gyro` | 각속도 | 3 | Gyro X/Y/Z (deg/s) |
 | `accel` | 가속도 | 3 | Accel X/Y/Z (g) |
+| `vel` | 속도 | 3 | Vel X/Y/Z (m/s) |
 | `mag` | 지자기 | 3 | Mag X/Y/Z (uT) |
 | `dist` | 거리 | 3 | Dist X/Y/Z (m) |
-| `vel` | 속도 | 3 | Vel X/Y/Z (m/s) |
-| `temp` | 온도 | 1 | Temp (C) |
-| `time` | 타임스탬프 | 1 | Time |
+| `temp` | 온도 | 1 | Temp (℃) |
+| `time` | 타임스탬프 | 1 | Time (ms) |
+
+- 자세(`euler`/`quat`)는 **끌 수 없어** 항상 맨 앞에 옵니다
+- `accel` 과 `vel` 은 같은 명령(`soa`)을 써서 **동시에 나올 수 없습니다**
 
 ### 센서 설정 요구사항
 
-오일러각 + 자이로 + 가속도 출력이 모두 켜져 있어야 9개 값이 나옵니다.
-값이 부족하면 `Ebimu_cmd.py --probe` 또는 `-c "<sog1>" -c "<soa1>"` 로 출력 항목을 켜세요.
+자세는 항상 나오고(Euler 3개), 자이로 + 가속도를 켜면 9개가 됩니다.
+값이 부족하면 출력 항목을 켜세요. 명령 설명은 [COMMANDS.md](COMMANDS.md) 참고.
+
+```bash
+python3 Ebimu_cmd.py -p /dev/ttyUSB0 -c "<sog1>" -c "<soa1>"
+```
 
 ---
 
