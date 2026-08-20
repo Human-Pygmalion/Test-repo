@@ -13,15 +13,25 @@ Roll / Pitch / Yaw + Gyro X,Y,Z + Accel X,Y,Z  9개 값을
     python3 ebimu_live.py -p /dev/ttyUSB0 --csv    # 한 줄씩 흘려보내기(로그용)
     python3 ebimu_live.py -p /dev/ttyUSB0 --raw    # 센서 원문 그대로
 
-센서 설정 요구사항
-    오일러각 + 자이로 + 가속도 출력이 모두 켜져 있어야 9개가 나온다.
-    (필드 수가 9가 아니어도 아래 표는 자동으로 맞춰서 표시한다)
+값 이름이 Val 0, Val 1 … 로 나올 때
+    패킷에는 숫자만 오고 어떤 항목이 켜져 있는지는 적혀 있지 않다.
+    필드 수로 조합을 추정하지만, 같은 개수가 나오는 조합이 여럿이면 틀릴 수 있다.
+    이럴 때는 켜 둔 항목을 직접 알려준다.
+
+        python3 ebimu_live.py --list-blocks                       # 항목 이름 보기
+        python3 ebimu_live.py -p /dev/ttyUSB0 \
+            --layout euler,gyro,accel,temp                        # 직접 지정
+
+    예) <sog1> <soa1> <sot1> 을 켜 두었다면 오일러각까지 10개이므로
+        --layout euler,gyro,accel,temp
 
 종료: Ctrl-C
 """
 
 import argparse
+import shutil
 import sys
+import unicodedata
 import threading
 import time
 
@@ -32,25 +42,110 @@ except ImportError:
 
 
 # ────────────────────────────────────────────────────────────────
-# 필드 수에 따른 라벨/단위 (센서 출력 설정에 따라 개수가 달라짐)
+# 출력 항목(블록) 정의
+#
+# EBIMU 패킷은 켜 놓은 항목이 아래 순서대로 이어 붙어 나온다.
+# 어떤 항목이 켜져 있는지는 패킷만 봐서는 알 수 없으므로,
+# 필드 수로 조합을 추정하고 맞지 않으면 --layout 으로 직접 지정한다.
 # ────────────────────────────────────────────────────────────────
-LAYOUTS = {
-    3:  [("Roll", "deg"), ("Pitch", "deg"), ("Yaw", "deg")],
-    6:  [("Roll", "deg"), ("Pitch", "deg"), ("Yaw", "deg"),
-         ("Gyro X", "deg/s"), ("Gyro Y", "deg/s"), ("Gyro Z", "deg/s")],
-    9:  [("Roll", "deg"), ("Pitch", "deg"), ("Yaw", "deg"),
-         ("Gyro X", "deg/s"), ("Gyro Y", "deg/s"), ("Gyro Z", "deg/s"),
-         ("Accel X", "g"), ("Accel Y", "g"), ("Accel Z", "g")],
-    10: [("Quat Z", ""), ("Quat Y", ""), ("Quat X", ""), ("Quat W", ""),
-         ("Gyro X", "deg/s"), ("Gyro Y", "deg/s"), ("Gyro Z", "deg/s"),
-         ("Accel X", "g"), ("Accel Y", "g"), ("Accel Z", "g")],
+BLOCKS = {
+    "id":    ("센서 ID",    [("Sensor ID", "")]),
+    "euler": ("오일러각",   [("Roll", "deg"), ("Pitch", "deg"), ("Yaw", "deg")]),
+    "quat":  ("쿼터니언",   [("Quat Z", ""), ("Quat Y", ""),
+                            ("Quat X", ""), ("Quat W", "")]),
+    "gyro":  ("각속도",     [("Gyro X", "deg/s"), ("Gyro Y", "deg/s"),
+                            ("Gyro Z", "deg/s")]),
+    "accel": ("가속도",     [("Accel X", "g"), ("Accel Y", "g"), ("Accel Z", "g")]),
+    "mag":   ("지자기",     [("Mag X", "uT"), ("Mag Y", "uT"), ("Mag Z", "uT")]),
+    "dist":  ("거리",       [("Dist X", "m"), ("Dist Y", "m"), ("Dist Z", "m")]),
+    "vel":   ("속도",       [("Vel X", "m/s"), ("Vel Y", "m/s"), ("Vel Z", "m/s")]),
+    "temp":  ("온도",       [("Temp", "C")]),
+    "time":  ("타임스탬프", [("Time", "s")]),
 }
 
+# 자세 뒤에 붙는 항목들의 출력 순서.
+# 보통 앞에서부터 차례로 켜므로, 앞부분만 잘라낸 조합을 후보로 삼는다.
+_TAIL = ["gyro", "accel", "mag", "dist", "vel", "temp", "time"]
 
-def labels_for(n):
-    if n in LAYOUTS:
-        return LAYOUTS[n]
-    return [(f"Val {i}", "") for i in range(n)]
+
+def _subsets(items):
+    """순서를 지키는 부분집합 전부."""
+    out = [[]]
+    for it in items:
+        out = out + [s + [it] for s in out]
+    return out
+
+
+def _candidates():
+    """필드 수가 같은 조합이 여러 개일 수 있어, 흔한 것부터 순서대로 돌려준다."""
+    subs = _subsets(_TAIL)
+    # 보통 앞에서부터 차례로 켜므로 연속된 조합(gyro, gyro+accel, ...)을 먼저 본다.
+    subs.sort(key=lambda sub: (0 if _TAIL[:len(sub)] == sub else 1,
+                               len(sub),
+                               [_TAIL.index(x) for x in sub]))
+    base = []
+    for head in (["euler"], ["quat"], []):
+        base += [head + sub for sub in subs]
+    # 센서를 여러 대 물리면 맨 앞에 ID 가 붙어 나오는 경우가 있다
+    return base + [["id"] + c for c in base]
+
+
+def matching_blocks(n):
+    """필드 수가 n 인 조합 전부 (가능성이 높은 순)."""
+    return [c for c in _candidates() if c and len(block_labels(c)) == n]
+
+
+def block_labels(names):
+    return [lab for n in names for lab in BLOCKS[n][1]]
+
+
+def guess_blocks(n):
+    """필드 수 n 으로 켜져 있는 항목 조합을 추정. 못 찾으면 None."""
+    m = matching_blocks(n)
+    return m[0] if m else None
+
+
+def parse_layout(text):
+    """'euler,gyro,accel' → ['euler','gyro','accel'] (이름 검증 포함)"""
+    names = [t.strip().lower() for t in text.split(",") if t.strip()]
+    bad = [n for n in names if n not in BLOCKS]
+    if bad:
+        sys.exit(f"[!] 모르는 항목: {', '.join(bad)}\n"
+                 f"    쓸 수 있는 이름: {', '.join(BLOCKS)}")
+    return names
+
+
+def list_blocks():
+    print("\n  --layout 에 쓸 수 있는 항목 (패킷에 나오는 순서)\n")
+    for key, (desc, labs) in BLOCKS.items():
+        print(f"    {key:<7s} {pad(desc, 12)}{len(labs)}개   "
+              f"{', '.join(l[0] for l in labs)}")
+    print("\n  예)  --layout euler,gyro,accel        9개")
+    print("       --layout euler,gyro,accel,temp  10개   (<sog1> <soa1> <sot1>)")
+    print("       --layout quat,gyro,accel        10개")
+    print("       --layout euler,gyro,accel,mag   12개\n")
+
+
+def resolve(n, layout):
+    """필드 수 n 에 대한 (라벨 목록, 설명, 보조 안내)."""
+    if layout:
+        labs = block_labels(layout)
+        note = "지정 " + "+".join(layout)
+        hint = ""
+        if len(labs) != n:
+            hint = f"[!] 지정 {len(labs)}개 ≠ 수신 {n}개 — 센서 설정을 확인하세요"
+        labs += [(f"Val {i}", "") for i in range(len(labs), n)]
+        return labs[:n], note, hint
+
+    m = matching_blocks(n)
+    if m:
+        hint = ""
+        if len(m) > 1:
+            other = ", ".join("+".join(c) for c in m[1:3])
+            hint = f"같은 {n}개 조합: {other} … --layout 으로 확정하세요"
+        return block_labels(m[0]), "추정 " + "+".join(m[0]), hint
+    return ([(f"Val {i}", "") for i in range(n)], "항목을 알 수 없음",
+            "--layout 으로 지정하세요 (--list-blocks 로 항목 확인)")
 
 
 # ────────────────────────────────────────────────────────────────
@@ -123,23 +218,59 @@ def bar(v, lo, hi):
     return "".join(cells)
 
 
-RANGES = {"deg": (-180, 180), "deg/s": (-300, 300), "g": (-2, 2), "": (-1, 1)}
+# 막대그래프 눈금 범위. None 이면 막대를 그리지 않는다.
+RANGES = {
+    "deg":   (-180, 180),
+    "deg/s": (-300, 300),
+    "g":     (-2, 2),
+    "uT":    (-100, 100),
+    "m":     (-5, 5),
+    "m/s":   (-5, 5),
+    "C":     (0, 80),
+    "s":     None,
+    "":      (-1, 1),
+}
 
 
-def render(sh, port, baud):
+def dwidth(text):
+    """터미널에서 실제로 차지하는 칸 수. 한글/한자는 두 칸이다."""
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
+
+
+def pad(text, n):
+    return text + " " * max(0, n - dwidth(text))
+
+
+def clip(line, width):
+    """터미널 폭을 넘으면 자른다. 줄바꿈이 생기면 화면 갱신이 어긋난다."""
+    out, w = "", 0
+    for ch in line:
+        cw = dwidth(ch)
+        if w + cw >= width:
+            break
+        out, w = out + ch, w + cw
+    return pad(out, width - 1)
+
+
+def render(sh, port, baud, layout):
     vals = list(sh.values)
-    labs = labels_for(len(vals))
+    labs, note, hint = resolve(len(vals), layout)
+    width = max(shutil.get_terminal_size((80, 24)).columns, 40)
 
     out = []
-    out.append(f"  EBIMU  {port} @ {baud}                     ")
-    out.append(f"  packets {sh.count:<10d} drops {sh.bad:<6d} {sh.hz:6.1f} Hz     ")
-    out.append("  " + "─" * 52)
+    out.append(f"  EBIMU  {port} @ {baud}")
+    out.append(f"  packets {sh.count:<10d} drops {sh.bad:<6d} {sh.hz:6.1f} Hz")
+    out.append(f"  필드 {len(vals)}개 · {note}")
+    if hint:
+        out.append(f"  ※ {hint}")
+    out.append("  " + "─" * 56)
     for (name, unit), v in zip(labs, vals):
-        lo, hi = RANGES.get(unit, (-1, 1))
-        out.append(f"  {name:<8s} {v:>10.3f} {unit:<6s} {bar(v, lo, hi)} ")
-    out.append("  " + "─" * 52)
-    out.append("  Ctrl-C 로 종료                              ")
-    return out
+        rng = RANGES.get(unit, (-1, 1))
+        graph = bar(v, *rng) if rng else " " * BAR_W
+        out.append(f"  {name:<9s} {v:>10.3f} {unit:<6s} {graph}")
+    out.append("  " + "─" * 56)
+    out.append("  Ctrl-C 로 종료")
+    return [clip(l, width) for l in out]
 
 
 def main():
@@ -149,7 +280,16 @@ def main():
     ap.add_argument("--hz", type=float, default=20.0, help="화면 갱신 주기(Hz), 기본 20")
     ap.add_argument("--csv", action="store_true", help="갱신 대신 한 줄씩 계속 출력")
     ap.add_argument("--raw", action="store_true", help="센서 원문 그대로 출력")
+    ap.add_argument("--layout", help="출력 항목을 직접 지정, 예: euler,gyro,accel")
+    ap.add_argument("--list-blocks", action="store_true",
+                    help="--layout 에 쓸 수 있는 항목 목록 (포트 없이 실행 가능)")
     args = ap.parse_args()
+
+    if args.list_blocks:
+        list_blocks()
+        return
+
+    layout = parse_layout(args.layout) if args.layout else None
 
     if args.port:
         port = args.port
@@ -172,6 +312,7 @@ def main():
     period = 1.0 / max(args.hz, 1.0)
     last_t, last_c = time.time(), 0
     lines_printed = 0
+    csv_header = False
 
     try:
         while sh.running:
@@ -191,10 +332,14 @@ def main():
                 continue
 
             if args.csv:
+                if not csv_header:
+                    labs, _n, _h = resolve(len(sh.values), layout)
+                    print(",".join(n.replace(" ", "") for n, _u in labs), flush=True)
+                    csv_header = True
                 print(",".join(f"{v:.3f}" for v in sh.values), flush=True)
                 continue
 
-            block = render(sh, port, baud)
+            block = render(sh, port, baud, layout)
             if lines_printed:
                 sys.stdout.write(f"\033[{lines_printed}A")   # 커서 위로
             sys.stdout.write("\n".join(block) + "\n")
