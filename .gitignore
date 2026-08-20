@@ -1,0 +1,5 @@
+# --detect --save-layout 이 만드는 파일. 센서마다 달라 공유하지 않는다.
+Ebimu/ebimu_layout.txt
+
+__pycache__/
+*.pyc
