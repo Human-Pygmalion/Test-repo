@@ -1,9 +1,19 @@
 # EBIMU-9DOFV5 명령어 정리
 
-출처: E2BOX `EBIMU-9DOFV5_rev3.pdf` (41쪽 SPECIFICATION 문서), 6장 COMMAND.
-[E2BOX EBIMU-9DOFV5 매뉴얼 페이지](https://www.e2box.co.kr/entry/EBIMU9DOFV5-%EB%A7%A4%EB%89%B4%EC%96%BC) 에서 받을 수 있습니다.
+## 원본 문서
 
-이 문서는 매뉴얼을 읽고 옮겨 적은 것입니다. 실제 센서로 확인한 것이 아닙니다.
+**[E2BOX EBIMU-9DOFV5 매뉴얼 페이지](https://www.e2box.co.kr/entry/EBIMU9DOFV5-%EB%A7%A4%EB%89%B4%EC%96%BC)**
+에서 아래 PDF 를 받을 수 있습니다. (저장소에는 두지 않습니다)
+
+| 파일 | 내용 | 이 문서에서 쓴 곳 |
+| --- | --- | --- |
+| `EBIMU-9DOFV5_rev3.pdf` | SPECIFICATION (41쪽) | 아래 명령표 전부 (6장), 출력 순서 (12쪽 5-1) |
+| `EBIMU-9DOFV5_상황별_설정_2.pdf` | 상황별 설정 (2쪽) | `Ebimu_cmd.py` 의 `--preset` 목록 |
+
+같은 페이지에 `EBIMU-9DOF_시작하기_rev11.pdf`(배선/연결) 도 있습니다.
+제품 소개와 다른 자료는 [E2BOX 홈페이지](https://www.e2box.co.kr/) 참고.
+
+이 문서는 위 매뉴얼을 읽고 옮겨 적은 것입니다. 실제 센서로 확인한 것이 아닙니다.
 
 ---
 

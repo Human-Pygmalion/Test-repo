@@ -1,5 +1,9 @@
-# --detect --save-layout 이 만드는 파일. 센서마다 달라 공유하지 않는다.
+# --detect --save-layout / --layout 이 만드는 파일. 센서마다 달라 공유하지 않는다.
 Ebimu/ebimu_layout.txt
+
+# E2BOX 가 배포하는 매뉴얼. 저장소에 두지 않고 공식 페이지에서 받는다.
+# 받는 곳은 Ebimu/COMMANDS.md 맨 위 참고.
+*.pdf
 
 __pycache__/
 *.pyc
