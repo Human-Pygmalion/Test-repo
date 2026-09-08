@@ -39,6 +39,7 @@ Roll / Pitch / Yaw + Gyro X,Y,Z + Accel X,Y,Z  9개 값을
 """
 
 import argparse
+import math
 import os
 import shutil
 import sys
@@ -178,7 +179,11 @@ def list_blocks():
 
 
 def resolve(n, layout):
-    """필드 수 n 에 대한 (라벨 목록, 설명, 보조 안내)."""
+    """필드 수 n 에 대한 (라벨 목록, 설명, 보조 안내, 블록 이름).
+
+    블록 이름을 같이 돌려주는 이유: 중력방향을 계산하려면 어느 자리가 자세이고
+    어느 자리가 가속도인지 알아야 한다. 라벨만으로는 되짚기 어렵다.
+    """
     if layout:
         names, source = layout
         labs = block_labels(names)
@@ -187,7 +192,7 @@ def resolve(n, layout):
         if len(labs) != n:
             hint = f"[!] 지정 {len(labs)}개 ≠ 수신 {n}개 — 센서 설정을 확인하세요"
         labs += [(f"Val {i}", "") for i in range(len(labs), n)]
-        return labs[:n], note, hint
+        return labs[:n], note, hint, names
 
     m = matching_blocks(n)
     if m:
@@ -195,9 +200,116 @@ def resolve(n, layout):
         if len(m) > 1:
             other = ", ".join("+".join(c) for c in m[1:3])
             hint = f"같은 {n}개 조합: {other} … --layout 으로 확정하세요"
-        return block_labels(m[0]), "추정 " + "+".join(m[0]), hint
+        return block_labels(m[0]), "추정 " + "+".join(m[0]), hint, m[0]
     return ([(f"Val {i}", "") for i in range(n)], "항목을 알 수 없음",
-            "--layout 으로 지정하세요 (--list-blocks 로 항목 확인)")
+            "--layout 으로 지정하세요 (--list-blocks 로 항목 확인)", [])
+
+
+# ────────────────────────────────────────────────────────────────
+# 자세 -> 중력방향
+#
+# HUPHY 의 src/huphy/sensors/base.py 에서 가져옴 (gravity_from_quat,
+# gravity_from_euler). 두 식은 오일러가 ZYX 순서라는 전제 아래 같은 값을 낸다.
+#
+# 중력방향은 "몸체 좌표에서 본 아래쪽" 단위벡터다. 센서가 수평이면 (0, 0, -1).
+# ────────────────────────────────────────────────────────────────
+LEVEL_GRAVITY = (0.0, 0.0, -1.0)
+
+
+def gravity_from_quat(quat):
+    """쿼터니언 `(w, x, y, z)` 에서. 수평이면 `(0, 0, -1)`.
+
+        g = R^T (0, 0, -1)
+
+    R 은 몸체에서 월드로 가는 회전이고 세 번째 행만 있으면 되므로, 행렬을 만들지
+    않고 바로 쓴다.
+    """
+    w, x, y, z = (float(v) for v in quat)
+    return (
+        2.0 * (w * y - x * z),
+        -2.0 * (y * z + w * x),
+        2.0 * (x * x + y * y) - 1.0,
+    )
+
+
+def gravity_from_euler(roll_deg, pitch_deg):
+    """오일러각에서. **ZYX(yaw -> pitch -> roll) 순서를 전제한다.**
+
+        g = (sin p, -sin r cos p, -cos r cos p)
+
+    yaw 는 안 쓴다 -- 중력이 z 축이라 z 축 회전으로는 안 바뀐다.
+
+    [!] 순서 규약은 센서 펌웨어가 정하는 값이고, EBIMU 매뉴얼에 명시가 없다.
+    ZXY 로 보고하는 센서에 이 식을 쓰면 중력방향이 조용히 틀어진다 -- 크기는
+    여전히 1이라 검사로도 안 잡힌다. 아래 '가속도와 차이' 로 대조할 것.
+    """
+    roll, pitch = math.radians(roll_deg), math.radians(pitch_deg)
+    return (
+        math.sin(pitch),
+        -math.sin(roll) * math.cos(pitch),
+        -math.cos(roll) * math.cos(pitch),
+    )
+
+
+def to_quaternion(packed):
+    """센서가 보낸 `(z, y, x, w)` 를 `(w, x, y, z)` 로.
+
+    **뒤집는 곳은 여기 하나다.** EBIMU 는 매뉴얼 12쪽 표대로 z,y,x,w 순서로 낸다.
+    """
+    z, y, x, w = (float(v) for v in packed)
+    return (w, x, y, z)
+
+
+def tilt_deg(g):
+    """수평에서 몇 도 기울었는지. 수평이면 0, 옆으로 눕히면 90."""
+    gz = max(-1.0, min(1.0, -float(g[2])))
+    return math.degrees(math.acos(gz))
+
+
+def block_slice(names, want):
+    """블록 이름이 패킷에서 차지하는 (시작, 끝) 자리. 없으면 None."""
+    i = 0
+    for name in names:
+        size = len(BLOCKS[name][1])
+        if name == want:
+            return i, i + size
+        i += size
+    return None
+
+
+def gravity_of(vals, names):
+    """지금 값에서 중력방향을 계산. 자세가 없으면 None.
+
+    돌려주는 것: (중력벡터, 계산에 쓴 형식)
+    """
+    for kind in ("quat", "euler"):
+        span = block_slice(names, kind)
+        if not span or span[1] > len(vals):
+            continue
+        part = vals[span[0]:span[1]]
+        if kind == "quat":
+            return gravity_from_quat(to_quaternion(part)), "quat"
+        return gravity_from_euler(part[0], part[1]), "euler"
+    return None, None
+
+
+def accel_gap(vals, names, g):
+    """정지 상태의 가속도계는 중력방향을 직접 잰다. 자세에서 계산한 것과 얼마나
+    다른지 -- 부착 방향이나 오일러 순서가 틀리면 여기서 벌어진다.
+
+    [!] <soa1>(중력 포함) 일 때만 뜻이 있다. <soa2>/<soa3> 은 중력을 뺀 값이라
+    정지 상태에서 0 이 나오므로 차이가 1 로 벌어진다.
+    """
+    span = block_slice(names, "accel")
+    if not span or span[1] > len(vals):
+        return None
+    ax, ay, az = vals[span[0]:span[1]]
+    norm = math.sqrt(ax * ax + ay * ay + az * az)
+    if norm < 0.5:          # 자유낙하 등 -- 방향을 뽑을 수 없다
+        return None
+    # 가속도계가 재는 것은 중력의 반대 방향이라 부호를 뒤집는다
+    measured = (-ax / norm, -ay / norm, -az / norm)
+    return max(abs(measured[i] - g[i]) for i in range(3))
 
 
 # ────────────────────────────────────────────────────────────────
@@ -306,7 +418,7 @@ def clip(line, width):
 
 def render(sh, port, baud, layout):
     vals = list(sh.values)
-    labs, note, hint = resolve(len(vals), layout)
+    labs, note, hint, names = resolve(len(vals), layout)
     width = max(shutil.get_terminal_size((80, 24)).columns, 40)
 
     out = []
@@ -321,6 +433,24 @@ def render(sh, port, baud, layout):
         graph = bar(v, *rng) if rng else " " * BAR_W
         out.append(f"  {name:<9s} {v:>10.3f} {unit:<6s} {graph}")
     out.append("  " + "─" * 56)
+
+    g, kind = gravity_of(vals, names)
+    if g:
+        out.append(f"  중력방향 ({'쿼터니언' if kind == 'quat' else '오일러각'}에서 계산)")
+        for axis, v in zip("XYZ", g):
+            out.append(f"  Grav {axis:<4s} {v:>10.3f} {'':<6s} {bar(v, -1, 1)}")
+        out.append(f"  {'기울기':<7s} {tilt_deg(g):>10.1f} {'deg':<6s} "
+                   f"{bar(tilt_deg(g), 0, 180)}")
+
+        gap = accel_gap(vals, names, g)
+        if gap is not None:
+            mark = "" if gap <= 0.05 else "  [!] 정지 상태인데 크면 확인 필요"
+            out.append(f"  {'가속도차':<6s} {gap:>10.3f}{mark}")
+        if kind == "euler":
+            out.append("  ※ 오일러는 ZYX 순서를 전제함."
+                       " 위 가속도차로 대조하세요")
+        out.append("  " + "─" * 56)
+
     out.append("  Ctrl-C 로 종료")
     return [clip(l, width) for l in out]
 
@@ -405,7 +535,7 @@ def main():
 
             if args.csv:
                 if not csv_header:
-                    labs, _n, _h = resolve(len(sh.values), layout)
+                    labs, _n, _h, _b = resolve(len(sh.values), layout)
                     print(",".join(n.replace(" ", "") for n, _u in labs), flush=True)
                     csv_header = True
                 print(",".join(f"{v:.3f}" for v in sh.values), flush=True)
