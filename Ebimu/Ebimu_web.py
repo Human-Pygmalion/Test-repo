@@ -124,11 +124,19 @@ PAGE = r"""<!doctype html>
   .view button:hover { background:#2b3243; }
 
   /* 바닥 격자와 중력(월드 기준이라 항상 아래) */
-  .floor { position:absolute; width:340px; height:340px; margin:-170px 0 0 -170px;
-           left:50%; top:50%; transform:rotateX(90deg) translateZ(-150px);
+  .floor { position:absolute; width:420px; height:420px; margin:-210px 0 0 -210px;
+           left:50%; top:50%; transform:rotateX(90deg) translateZ(-170px);
            background:
-             repeating-linear-gradient(0deg,#222836 0 1px,transparent 1px 34px),
-             repeating-linear-gradient(90deg,#222836 0 1px,transparent 1px 34px); }
+             repeating-linear-gradient(0deg,#39415a 0 1px,transparent 1px 35px),
+             repeating-linear-gradient(90deg,#39415a 0 1px,transparent 1px 35px),
+             repeating-linear-gradient(0deg,#4a5470 0 2px,transparent 2px 175px),
+             repeating-linear-gradient(90deg,#4a5470 0 2px,transparent 2px 175px);
+           box-shadow:inset 0 0 90px rgba(0,0,0,.75); }
+  /* 보드가 격자 위에 떠 있다는 것을 보이게 하는 그림자 */
+  .shadow { position:absolute; left:50%; top:50%; width:170px; height:190px;
+            margin:-95px 0 0 -85px; border-radius:50%;
+            transform:rotateX(90deg) translateZ(-169px);
+            background:radial-gradient(closest-side,rgba(0,0,0,.55),transparent); }
   .gvec { position:absolute; left:50%; top:50%; width:2px; height:150px;
           background:#4d566b; transform-origin:50% 0%; }
   .gvec::after { content:""; position:absolute; left:-4px; bottom:-9px;
@@ -158,24 +166,45 @@ PAGE = r"""<!doctype html>
   .part { position:absolute; background:#1b1b1f; border:1px solid #2a2a30;
           border-radius:1px; }
   .chip { background:#17171b; border-color:#33333a; }
-  .pad  { position:absolute; width:18px; height:9px; background:#c9b072;
-          border-radius:1px; }
+  .pad  { position:absolute; width:18px; height:10px; border-radius:1px;
+          background:linear-gradient(#ffe9a8,#d9b64e);
+          box-shadow:0 0 3px rgba(255,220,130,.55); }
   .mark { position:absolute; left:6px; bottom:5px; width:0; height:0;
           border-left:8px solid #7d8b7f; border-bottom:8px solid transparent; }
 
-  /* 축 화살표 -- 보드에 붙어 같이 돈다 */
-  .axis { position:absolute; left:-1px; top:0; width:2px; height:118px;
-          transform-origin:50% 0%; }
-  .axis::after { content:""; position:absolute; left:-4px; bottom:-9px;
-                 border:5px solid transparent; }
-  .axis span { position:absolute; bottom:-24px; left:8px;
-               font-size:12px; font-weight:700; letter-spacing:.03em; }
-  .ax  { background:var(--ax); transform:rotateZ(-90deg); }
-  .ax::after  { border-top-color:var(--ax); }   .ax  span { color:var(--ax); }
-  .ay  { background:var(--ay); transform:rotateX(90deg); }
-  .ay::after  { border-top-color:var(--ay); }   .ay  span { color:var(--ay); }
-  .az  { background:var(--az); transform:rotateZ(180deg); }
-  .az::after  { border-top-color:var(--az); }   .az  span { color:var(--az); }
+  /* 축 화살표 -- 보드에 붙어 같이 돈다.
+     매뉴얼 4-1 처럼 보드 '윗면' 에서 나간다 (translateY 로 두께 절반만큼 올림).
+     평면 두 장을 90도로 교차시켜 입체로 보이게 한다. 어느 각도에서 봐도
+     납작해 보이지 않는다. */
+  .axis { position:absolute; left:0; top:0; width:0; height:0;
+          transform-origin:0 0; transform-style:preserve-3d; }
+  .axis .rod { position:absolute; left:-5px; top:0; width:10px; height:128px;
+               background:currentColor; }
+  .axis .rod.b { transform:rotateY(90deg); }
+  .axis .tip { position:absolute; left:-13px; top:126px; width:0; height:0;
+               border-left:13px solid transparent; border-right:13px solid transparent;
+               border-top:30px solid currentColor; }
+  .axis .tip.b { transform:rotateY(90deg); }
+  .axis span { position:absolute; top:150px; left:12px; white-space:nowrap;
+               font-size:13px; font-weight:700; letter-spacing:.03em;
+               color:currentColor; }
+  .ax  { color:var(--ax);
+         transform:translateY(calc(var(--t) / -2)) rotateZ(-90deg); }
+  .ay  { color:var(--ay);
+         transform:translateY(calc(var(--t) / -2)) rotateX(90deg); }
+  .az  { color:var(--az);
+         transform:translateY(calc(var(--t) / -2)) rotateZ(180deg); }
+
+  /* 회전 방향 표시 -- 매뉴얼의 회색 곡선 화살표와 '+' 자리 */
+  .spin { position:absolute; width:54px; height:54px; margin:-27px 0 0 -27px;
+          border-radius:50%; }
+  .spin { border-color:#79839a; border-right-color:transparent;
+          border-bottom-color:transparent; opacity:.75; }
+  .spin i { position:absolute; right:-11px; top:22px; font-style:normal;
+            color:#79839a; font-size:12px; font-weight:700; }
+  .sx { transform:translateX(46px) rotateY(90deg); }    /* X 축 둘레 */
+  .sy { transform:translateZ(46px); }                   /* Y 축 둘레 */
+  .sz { transform:translateY(-46px) rotateX(90deg); }   /* Z 축 둘레 */
 
   .panel { border-left:1px solid var(--line); background:var(--panel);
            overflow-y:auto; padding:12px 14px; }
@@ -203,15 +232,22 @@ PAGE = r"""<!doctype html>
   <div class="stage">
     <div class="scene">
       <div class="floor"></div>
+      <div class="shadow"></div>
       <div class="gvec"><span class="glabel">g</span></div>
       <div class="body" id="box">
         <div class="face top" id="top"></div>
         <div class="face bot"></div>
         <div class="face fb f"></div><div class="face fb b"></div>
         <div class="face lr l"></div><div class="face lr r"></div>
-        <div class="axis ax"><span>X+</span></div>
-        <div class="axis ay"><span>Y+</span></div>
-        <div class="axis az"><span>Z+</span></div>
+        <div class="axis ax"><i class="rod"></i><i class="rod b"></i>
+             <i class="tip"></i><i class="tip b"></i><span>X+ ROLL</span></div>
+        <div class="axis ay"><i class="rod"></i><i class="rod b"></i>
+             <i class="tip"></i><i class="tip b"></i><span>Y+ PITCH</span></div>
+        <div class="axis az"><i class="rod"></i><i class="rod b"></i>
+             <i class="tip"></i><i class="tip b"></i><span>Z+ YAW</span></div>
+        <div class="spin sx"><i>+</i></div>
+        <div class="spin sy"><i>+</i></div>
+        <div class="spin sz"><i>+</i></div>
       </div>
     </div>
     <div class="view">
@@ -222,10 +258,11 @@ PAGE = r"""<!doctype html>
       <button data-view="iso">기본</button>
     </div>
     <div class="legend">
-      <b style="color:var(--ax)">X+</b> roll 축 ·
-      <b style="color:var(--ay)">Y+</b> pitch 축 ·
-      <b style="color:var(--az)">Z+</b> yaw 축<br>
-      회색 화살표 <b>g</b> = 중력(항상 아래) · 보드 16.3 × 18.6 × 3.05 mm
+      <b style="color:var(--ax)">X+ ROLL</b> (패드 열 방향) ·
+      <b style="color:var(--ay)">Y+ PITCH</b> ·
+      <b style="color:var(--az)">Z+ YAW</b> · 회색 원 = + 회전 방향<br>
+      화살표는 매뉴얼 4-1 처럼 보드 윗면에서 나갑니다 ·
+      <b>g</b> = 중력(항상 아래) · 보드 16.3 × 18.6 × 3.05 mm
     </div>
   </div>
   <div class="panel">
