@@ -92,46 +92,91 @@ PAGE = r"""<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>EBIMU 3D</title>
 <style>
+  /* 보드 치수는 매뉴얼 9장 그대로: 16.3(W) x 18.6(H) x 3.05(D) mm, x9 배 */
   :root {
+    --w:147px; --d:167px; --t:27px;      /* 보드 가로 / 세로 / 두께 */
     --bg:#0f1115; --panel:#171a21; --line:#262b36;
-    --fg:#e6e9ef; --dim:#8b93a7; --accent:#5aa9ff; --warn:#ffb454; --bad:#ff6b6b;
+    --fg:#e6e9ef; --dim:#8b93a7; --warn:#ffb454; --bad:#ff6b6b; --ok:#7bd88f;
+    --ax:#ff5a5a; --ay:#54d17a; --az:#5aa9ff;   /* 매뉴얼 4-3~4-5 축 색 */
   }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--fg);
          font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
   header { padding:10px 16px; border-bottom:1px solid var(--line);
            display:flex; gap:16px; align-items:baseline; flex-wrap:wrap; }
-  h1 { font-size:15px; margin:0; font-weight:600; letter-spacing:.02em; }
+  h1 { font-size:15px; margin:0; font-weight:600; }
   .meta { color:var(--dim); font-size:12px; }
-  .wrap { display:grid; grid-template-columns:1fr 320px; gap:0; height:calc(100vh - 46px); }
+  .wrap { display:grid; grid-template-columns:1fr 320px;
+          height:calc(100vh - 46px); }
   @media (max-width:800px){ .wrap{ grid-template-columns:1fr; height:auto; } }
 
-  /* 3D 무대 */
   .stage { position:relative; display:grid; place-items:center;
-           perspective:900px; overflow:hidden; }
-  .scene { transform-style:preserve-3d; transform:rotateX(-18deg) rotateY(-28deg); }
-  .body  { position:relative; width:170px; height:170px;
-           transform-style:preserve-3d; transition:transform .05s linear; }
-  .face  { position:absolute; inset:0; border:1px solid rgba(255,255,255,.25);
-           display:grid; place-items:center; font-size:12px; letter-spacing:.08em;
-           color:#0f1115; font-weight:700; }
-  /* 상자 두께 55px (=110/2) */
-  .fx1 { background:rgba(90,169,255,.85);  transform:translateZ(55px); }
-  .fx2 { background:rgba(90,169,255,.45);  transform:rotateY(180deg) translateZ(55px); }
-  .fy1 { background:rgba(120,220,160,.85); transform:rotateY(90deg) translateZ(55px); }
-  .fy2 { background:rgba(120,220,160,.45); transform:rotateY(-90deg) translateZ(55px); }
-  .fz1 { background:rgba(255,180,84,.9);   transform:rotateX(90deg) translateZ(55px); }
-  .fz2 { background:rgba(255,180,84,.45);  transform:rotateX(-90deg) translateZ(55px); }
+           perspective:1000px; overflow:hidden; }
+  .scene { transform-style:preserve-3d;
+           transform:rotateX(-20deg) rotateY(-32deg); }
+  .stage { cursor:grab; }
+  .stage.drag { cursor:grabbing; }
+  .view { position:absolute; right:14px; bottom:12px; color:var(--dim);
+          font-size:11px; text-align:right; line-height:1.7; }
+  .view button { font:inherit; color:var(--fg); background:#222836;
+                 border:1px solid var(--line); border-radius:3px;
+                 padding:2px 8px; cursor:pointer; margin-left:4px; }
+  .view button:hover { background:#2b3243; }
 
-  /* 바닥면과 중력 화살표 */
-  .floor { position:absolute; width:280px; height:280px; border:1px dashed #333a49;
-           transform:rotateX(90deg) translateZ(-130px); }
-  .grav  { position:absolute; width:2px; height:110px; background:var(--bad);
-           transform-origin:50% 0%; }
-  .grav::after { content:""; position:absolute; left:-4px; bottom:-8px;
-                 border:5px solid transparent; border-top-color:var(--bad); }
+  /* 바닥 격자와 중력(월드 기준이라 항상 아래) */
+  .floor { position:absolute; width:340px; height:340px; margin:-170px 0 0 -170px;
+           left:50%; top:50%; transform:rotateX(90deg) translateZ(-150px);
+           background:
+             repeating-linear-gradient(0deg,#222836 0 1px,transparent 1px 34px),
+             repeating-linear-gradient(90deg,#222836 0 1px,transparent 1px 34px); }
+  .gvec { position:absolute; left:50%; top:50%; width:2px; height:150px;
+          background:#4d566b; transform-origin:50% 0%; }
+  .gvec::after { content:""; position:absolute; left:-4px; bottom:-9px;
+                 border:5px solid transparent; border-top-color:#4d566b; }
+  .glabel { position:absolute; left:8px; bottom:-6px; color:#6b7488; font-size:11px; }
 
-  /* 값 패널 */
+  /* 센서 보드 */
+  .body { position:absolute; left:50%; top:50%; width:0; height:0;
+          transform-style:preserve-3d; transition:transform .05s linear; }
+  .face { position:absolute; transform-style:preserve-3d; }
+  .top, .bot { width:var(--w); height:var(--d);
+               margin:calc(var(--d) / -2) 0 0 calc(var(--w) / -2); }
+  .fb       { width:var(--w); height:var(--t);
+              margin:calc(var(--t) / -2) 0 0 calc(var(--w) / -2); }
+  .lr       { width:var(--d); height:var(--t);
+              margin:calc(var(--t) / -2) 0 0 calc(var(--d) / -2); }
+  .top { transform:translateY(calc(var(--t) / -2)) rotateX(90deg);
+         background:#12301f; border:1px solid #0a1c12; }
+  .bot { transform:translateY(calc(var(--t) / 2)) rotateX(90deg);
+         background:#0d2418; border:1px solid #0a1c12; }
+  .fb.f { transform:translateZ(calc(var(--d) / 2)); background:#0e2718; }
+  .fb.b { transform:translateZ(calc(var(--d) / -2)) rotateY(180deg); background:#0b1f13; }
+  .lr.l { transform:translateX(calc(var(--w) / -2)) rotateY(-90deg); background:#0b1f13; }
+  .lr.r { transform:translateX(calc(var(--w) / 2)) rotateY(90deg); background:#0e2718; }
+
+  /* 보드 위 부품과 castellated 패드 (매뉴얼 38쪽 배치) */
+  .part { position:absolute; background:#1b1b1f; border:1px solid #2a2a30;
+          border-radius:1px; }
+  .chip { background:#17171b; border-color:#33333a; }
+  .pad  { position:absolute; width:18px; height:9px; background:#c9b072;
+          border-radius:1px; }
+  .mark { position:absolute; left:6px; bottom:5px; width:0; height:0;
+          border-left:8px solid #7d8b7f; border-bottom:8px solid transparent; }
+
+  /* 축 화살표 -- 보드에 붙어 같이 돈다 */
+  .axis { position:absolute; left:-1px; top:0; width:2px; height:118px;
+          transform-origin:50% 0%; }
+  .axis::after { content:""; position:absolute; left:-4px; bottom:-9px;
+                 border:5px solid transparent; }
+  .axis span { position:absolute; bottom:-24px; left:8px;
+               font-size:12px; font-weight:700; letter-spacing:.03em; }
+  .ax  { background:var(--ax); transform:rotateZ(-90deg); }
+  .ax::after  { border-top-color:var(--ax); }   .ax  span { color:var(--ax); }
+  .ay  { background:var(--ay); transform:rotateX(90deg); }
+  .ay::after  { border-top-color:var(--ay); }   .ay  span { color:var(--ay); }
+  .az  { background:var(--az); transform:rotateZ(180deg); }
+  .az::after  { border-top-color:var(--az); }   .az  span { color:var(--az); }
+
   .panel { border-left:1px solid var(--line); background:var(--panel);
            overflow-y:auto; padding:12px 14px; }
   .panel h2 { font-size:12px; color:var(--dim); margin:16px 0 6px;
@@ -141,11 +186,12 @@ PAGE = r"""<!doctype html>
   td { padding:2px 0; white-space:nowrap; }
   td.n { text-align:right; font-variant-numeric:tabular-nums; }
   td.u { color:var(--dim); padding-left:6px; width:44px; }
-  .warn { color:var(--warn); }
-  .bad  { color:var(--bad); }
-  .ok   { color:#7bd88f; }
+  .warn{color:var(--warn)} .bad{color:var(--bad)} .ok{color:var(--ok)}
+  .off {color:var(--bad)}
   .note { color:var(--dim); font-size:12px; margin-top:4px; }
-  .off  { color:var(--bad); }
+  .legend { position:absolute; left:14px; bottom:12px; color:var(--dim);
+            font-size:11px; line-height:1.7; }
+  .legend b { font-weight:700; }
 </style></head><body>
 <header>
   <h1>EBIMU 3D</h1>
@@ -157,12 +203,29 @@ PAGE = r"""<!doctype html>
   <div class="stage">
     <div class="scene">
       <div class="floor"></div>
+      <div class="gvec"><span class="glabel">g</span></div>
       <div class="body" id="box">
-        <div class="face fx1">X+</div><div class="face fx2">X−</div>
-        <div class="face fy1">Y+</div><div class="face fy2">Y−</div>
-        <div class="face fz1">Z+</div><div class="face fz2">Z−</div>
+        <div class="face top" id="top"></div>
+        <div class="face bot"></div>
+        <div class="face fb f"></div><div class="face fb b"></div>
+        <div class="face lr l"></div><div class="face lr r"></div>
+        <div class="axis ax"><span>X+</span></div>
+        <div class="axis ay"><span>Y+</span></div>
+        <div class="axis az"><span>Z+</span></div>
       </div>
-      <div class="grav" id="grav"></div>
+    </div>
+    <div class="view">
+      끌어서 돌리기 · 휠로 확대<br>
+      <button data-view="top">위</button>
+      <button data-view="front">앞</button>
+      <button data-view="side">옆</button>
+      <button data-view="iso">기본</button>
+    </div>
+    <div class="legend">
+      <b style="color:var(--ax)">X+</b> roll 축 ·
+      <b style="color:var(--ay)">Y+</b> pitch 축 ·
+      <b style="color:var(--az)">Z+</b> yaw 축<br>
+      회색 화살표 <b>g</b> = 중력(항상 아래) · 보드 16.3 × 18.6 × 3.05 mm
     </div>
   </div>
   <div class="panel">
@@ -173,6 +236,70 @@ PAGE = r"""<!doctype html>
   </div>
 </div>
 <script>
+// 보드 윗면 부품 -- 매뉴얼 38쪽 도면의 배치를 옮긴 것. 보기용이다.
+(function board(){
+  const top = document.getElementById("top");
+  const parts = [                       // [left%, top%, w%, h%, 큰칩 여부]
+    [12,10,34,13,0], [20,26,42,26,1], [58,34,26,14,0],
+    [14,58,18,8,0],  [40,60,14,8,0],  [60,58,10,8,0],
+    [22,74,30,7,0],  [58,72,16,7,0],
+  ];
+  for (const [l,t,w,h,big] of parts) {
+    const d = document.createElement("div");
+    d.className = "part" + (big ? " chip" : "");
+    d.style.cssText = `left:${l}%;top:${t}%;width:${w}%;height:${h}%`;
+    top.appendChild(d);
+  }
+  // castellated 패드: 위아래 가장자리에 2.54mm 간격
+  for (const edge of [2, 88]) {
+    for (let i = 0; i < 5; i++) {
+      const d = document.createElement("div");
+      d.className = "pad";
+      d.style.cssText = `left:${11 + i * 19}%;top:${edge}%`;
+      top.appendChild(d);
+    }
+  }
+  const m = document.createElement("div"); m.className = "mark"; top.appendChild(m);
+})();
+
+// ── 시점 ─────────────────────────────────────────────────────
+// 보는 각도만 바꾼다. 센서 자세(.body)와는 별개다 -- 시점을 돌려도 값은 안 변한다.
+const VIEWS = { iso:[-20,-32], top:[-89,0], front:[0,0], side:[0,-90] };
+const cam = { rx:-20, ry:-32, zoom:1 };
+const scene = document.querySelector(".scene");
+const stage = document.querySelector(".stage");
+
+function applyCam(){
+  scene.style.transform =
+    `scale(${cam.zoom}) rotateX(${cam.rx}deg) rotateY(${cam.ry}deg)`;
+}
+let drag = null;
+stage.addEventListener("pointerdown", e => {
+  if (e.target.tagName === "BUTTON") return;
+  drag = { x:e.clientX, y:e.clientY, rx:cam.rx, ry:cam.ry };
+  stage.classList.add("drag");
+  stage.setPointerCapture(e.pointerId);
+});
+stage.addEventListener("pointermove", e => {
+  if (!drag) return;
+  cam.ry = drag.ry + (e.clientX - drag.x) * 0.4;
+  // 위아래는 +-89 도에서 멈춘다. 넘어가면 위아래가 뒤집혀 방향 감각이 사라진다.
+  cam.rx = Math.max(-89, Math.min(89, drag.rx - (e.clientY - drag.y) * 0.4));
+  applyCam();
+});
+for (const ev of ["pointerup","pointercancel","pointerleave"])
+  stage.addEventListener(ev, () => { drag = null; stage.classList.remove("drag"); });
+stage.addEventListener("wheel", e => {
+  e.preventDefault();
+  cam.zoom = Math.max(0.4, Math.min(3, cam.zoom * (e.deltaY > 0 ? 0.9 : 1.1)));
+  applyCam();
+}, { passive:false });
+for (const b of document.querySelectorAll(".view button"))
+  b.addEventListener("click", () => {
+    [cam.rx, cam.ry] = VIEWS[b.dataset.view]; applyCam();
+  });
+applyCam();
+
 // 쿼터니언 (w,x,y,z) -> 3x3 회전행렬 (몸체 -> 월드)
 function quatToR(q) {
   const [w,x,y,z] = q;
@@ -205,8 +332,8 @@ function css(R){                       // matrix3d 는 열 우선
 }
 function rows(t, list){
   t.innerHTML = list.map(([n,v,u,c]) =>
-    `<td>${n}</td><td class="n ${c||''}">${v}</td><td class="u">${u||''}</td>`)
-    .map(r=>`<tr>${r}</tr>`).join("");
+    `<tr><td>${n}</td><td class="n ${c||''}">${v}</td>`
+    + `<td class="u">${u||''}</td></tr>`).join("");
 }
 const $ = id => document.getElementById(id);
 
@@ -228,22 +355,17 @@ es.onmessage = (ev) => {
                                ["Pitch",d.euler[1].toFixed(2), "deg"],
                                ["Yaw",  d.euler[2].toFixed(2), "deg"]]);
   else if (d.quat) rows($("att"), d.quat.map((v,i)=>["wxyz"[i], v.toFixed(4), ""]));
-  else rows($("att"), [["자세 없음","","" ]]);
+  else rows($("att"), [["자세 없음","",""]]);
 
   if (d.gravity) {
-    const g = d.gravity;
     rows($("gravt"), [
-      ["Grav X", g[0].toFixed(3), ""], ["Grav Y", g[1].toFixed(3), ""],
-      ["Grav Z", g[2].toFixed(3), ""],
+      ["Grav X", d.gravity[0].toFixed(3), ""],
+      ["Grav Y", d.gravity[1].toFixed(3), ""],
+      ["Grav Z", d.gravity[2].toFixed(3), ""],
       ["기울기", d.tilt.toFixed(1), "deg"],
       ...(d.accelGap === null ? [] :
         [["가속도차", d.accelGap.toFixed(3), "", d.accelGap > 0.05 ? "bad":"ok"]]),
     ]);
-    // 중력 화살표를 실제 방향으로 눕힌다 (화면 좌표로 바꿔서)
-    const v = [g[0], -g[2], g[1]];
-    const yaw = Math.atan2(v[0], v[2]) * 180/Math.PI;
-    const pit = Math.atan2(Math.hypot(v[0],v[2]), v[1]) * 180/Math.PI;
-    $("grav").style.transform = `rotateY(${yaw}deg) rotateX(${-pit}deg)`;
     $("gnote").textContent =
       (d.gravityFrom === "euler"
         ? "오일러(ZYX 전제)에서 계산 — 가속도차로 대조하세요"
