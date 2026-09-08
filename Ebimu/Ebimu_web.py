@@ -63,6 +63,12 @@ def frame(sh, layout):
     grav, kind = live.gravity_of(vals, names)
     gap = live.accel_gap(vals, names, grav) if grav else None
 
+    # 가속도계가 재는 방향. 자세 계산과 무관한 독립적인 값이라 대조 근거가 된다.
+    accel = None
+    span = live.block_slice(names, "accel")
+    if span and span[1] <= len(vals):
+        accel = [round(v, 4) for v in vals[span[0]:span[1]]]
+
     return {
         "values": [round(v, 4) for v in vals],
         "labels": [l[0] for l in labs],
@@ -70,6 +76,7 @@ def frame(sh, layout):
         "quat": quat,
         "euler": euler,
         "gravity": [round(v, 4) for v in grav] if grav else None,
+        "accel": accel,
         "gravityFrom": kind,
         "tilt": round(live.tilt_deg(grav), 2) if grav else None,
         "accelGap": round(gap, 4) if gap is not None else None,
@@ -137,11 +144,20 @@ PAGE = r"""<!doctype html>
             margin:-95px 0 0 -85px; border-radius:50%;
             transform:rotateX(90deg) translateZ(-169px);
             background:radial-gradient(closest-side,rgba(0,0,0,.55),transparent); }
-  .gvec { position:absolute; left:50%; top:50%; width:2px; height:150px;
-          background:#4d566b; transform-origin:50% 0%; }
-  .gvec::after { content:""; position:absolute; left:-4px; bottom:-9px;
-                 border:5px solid transparent; border-top-color:#4d566b; }
-  .glabel { position:absolute; left:8px; bottom:-6px; color:#6b7488; font-size:11px; }
+  /* 데이터로 그리는 벡터 (중력 / 가속도계). 축 화살표와 같은 교차 평면 구조. */
+  .vec { position:absolute; left:0; top:0; width:0; height:0;
+         transform-origin:0 0; transform-style:preserve-3d; }
+  .vec .rod { position:absolute; left:-3px; top:0; width:6px; height:104px;
+              background:currentColor; }
+  .vec .rod.b { transform:rotateY(90deg); }
+  .vec .tip { position:absolute; left:-9px; top:102px; width:0; height:0;
+              border-left:9px solid transparent; border-right:9px solid transparent;
+              border-top:22px solid currentColor; }
+  .vec .tip.b { transform:rotateY(90deg); }
+  .vec span { position:absolute; top:124px; left:10px; white-space:nowrap;
+              font-size:12px; font-weight:700; color:currentColor; }
+  .gv { color:#c6ccdb; }        /* 자세에서 계산한 중력 */
+  .av { color:#ff9f43; }        /* 가속도계가 잰 방향 */
 
   /* 센서 보드 */
   .body { position:absolute; left:50%; top:50%; width:0; height:0;
@@ -233,7 +249,6 @@ PAGE = r"""<!doctype html>
     <div class="scene">
       <div class="floor"></div>
       <div class="shadow"></div>
-      <div class="gvec"><span class="glabel">g</span></div>
       <div class="body" id="box">
         <div class="face top" id="top"></div>
         <div class="face bot"></div>
@@ -245,6 +260,10 @@ PAGE = r"""<!doctype html>
              <i class="tip"></i><i class="tip b"></i><span>Y+ PITCH</span></div>
         <div class="axis az"><i class="rod"></i><i class="rod b"></i>
              <i class="tip"></i><i class="tip b"></i><span>Z+ YAW</span></div>
+        <div class="vec gv" id="gv"><i class="rod"></i><i class="rod b"></i>
+             <i class="tip"></i><i class="tip b"></i><span>g 계산</span></div>
+        <div class="vec av" id="av"><i class="rod"></i><i class="rod b"></i>
+             <i class="tip"></i><i class="tip b"></i><span>g 가속도계</span></div>
         <div class="spin sx"><i>+</i></div>
         <div class="spin sy"><i>+</i></div>
         <div class="spin sz"><i>+</i></div>
@@ -261,8 +280,9 @@ PAGE = r"""<!doctype html>
       <b style="color:var(--ax)">X+ ROLL</b> (패드 열 방향) ·
       <b style="color:var(--ay)">Y+ PITCH</b> ·
       <b style="color:var(--az)">Z+ YAW</b> · 회색 원 = + 회전 방향<br>
-      화살표는 매뉴얼 4-1 처럼 보드 윗면에서 나갑니다 ·
-      <b>g</b> = 중력(항상 아래) · 보드 16.3 × 18.6 × 3.05 mm
+      <b style="color:#c6ccdb">g 계산</b> = 자세에서 계산한 중력 ·
+      <b style="color:#ff9f43">g 가속도계</b> = 가속도계가 잰 방향<br>
+      정지 상태에서 둘이 겹치면 정상 · 보드 16.3 × 18.6 × 3.05 mm
     </div>
   </div>
   <div class="panel">
@@ -367,6 +387,20 @@ function css(R){                       // matrix3d 는 열 우선
        + `${M[0][1]},${M[1][1]},${M[2][1]},0,`
        + `${M[0][2]},${M[1][2]},${M[2][2]},0,0,0,0,1)`;
 }
+// 센서 좌표 벡터 v 를 향해 화살표를 눕힌다.
+//   화살표는 기본으로 로컬 +Y(아래)를 향한다. 화면 좌표로 바꾼 뒤,
+//   rotateY(a)rotateX(b) 로 (0,1,0) -> v 가 되게 하는 a, b 를 구한다.
+function aim(el, v) {
+  if (!v) { el.style.display = "none"; return; }
+  const n = Math.hypot(v[0], v[1], v[2]);
+  if (n < 1e-6) { el.style.display = "none"; return; }
+  el.style.display = "";
+  const sx = v[0]/n, sy = -v[2]/n, sz = v[1]/n;      // 센서 -> 화면
+  const b = Math.acos(Math.max(-1, Math.min(1, sy))) * 180/Math.PI;
+  const a = Math.atan2(sx, sz) * 180/Math.PI;
+  el.style.transform = `rotateY(${a}deg) rotateX(${b}deg)`;
+}
+
 function rows(t, list){
   t.innerHTML = list.map(([n,v,u,c]) =>
     `<tr><td>${n}</td><td class="n ${c||''}">${v}</td>`
@@ -393,6 +427,11 @@ es.onmessage = (ev) => {
                                ["Yaw",  d.euler[2].toFixed(2), "deg"]]);
   else if (d.quat) rows($("att"), d.quat.map((v,i)=>["wxyz"[i], v.toFixed(4), ""]));
   else rows($("att"), [["자세 없음","",""]]);
+
+  // 중력 화살표는 받은 계산값 그대로 그린다. 고정값이 아니다.
+  aim($("gv"), d.gravity);
+  // 가속도계가 재는 것은 중력의 반대 방향이라 부호를 뒤집는다
+  aim($("av"), d.accel ? d.accel.map(v => -v) : null);
 
   if (d.gravity) {
     rows($("gravt"), [
